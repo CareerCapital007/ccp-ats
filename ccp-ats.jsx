@@ -573,6 +573,18 @@ export default function App() {
       searches: exists ? data.searches.map((x) => (x.id === s.id ? s : x)) : [s, ...data.searches],
     });
   };
+  // A search and a brand new company must be written in a single operation.
+  // Two separate writes would each work from the same snapshot, and the second
+  // would silently discard the first.
+  const saveSearch = (sr, newClient) => {
+    const exists = data.searches.some((x) => x.id === sr.id);
+    persist({
+      ...data,
+      clients: newClient ? [newClient, ...data.clients] : data.clients,
+      searches: exists ? data.searches.map((x) => (x.id === sr.id ? sr : x)) : [sr, ...data.searches],
+    });
+  };
+
   const upsertContact = (ct) => {
     const exists = data.contacts.some((x) => x.id === ct.id);
     persist({
@@ -819,8 +831,8 @@ export default function App() {
         />
       )}
       {modal?.type === 'search' && (
-        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners} onCreateClient={upsertClient}
-          onClose={() => setModal(null)} onSave={(s) => { upsertSearch(s); setModal(null); }} />
+        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners}
+          onClose={() => setModal(null)} onSave={(sr, newClient) => { saveSearch(sr, newClient); setModal(null); }} />
       )}
       {modal?.type === 'client' && (
         <ClientForm record={modal.payload} nav={nav} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
@@ -1696,7 +1708,7 @@ function CandidateForm({ tags, searches, owners, onClose, onSave }) {
   );
 }
 
-function SearchForm({ record, tags, clients, owners, onCreateClient, onClose, onSave }) {
+function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
   const [f, setF] = useState(
     record || { id: uid('s'), client: '', clientId: '', role: '', functionTags: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
   );
@@ -1705,14 +1717,21 @@ function SearchForm({ record, tags, clients, owners, onCreateClient, onClose, on
 
   const save = () => {
     let out = { ...f };
-    if (!out.clientId && newCo.trim()) {
-      const created = { id: uid('cl'), name: newCo.trim(), type: 'Direct', contactName: '', contactTitle: '', email: '', phone: '', status: 'Active', notes: '' };
-      onCreateClient(created);
-      out = { ...out, clientId: created.id, client: created.name };
+    let created = null;
+    const typed = newCo.trim();
+    if (!out.clientId && typed) {
+      // reuse a company of the same name rather than making a duplicate
+      const existing = clients.find((c) => (c.name || '').toLowerCase() === typed.toLowerCase());
+      if (existing) {
+        out = { ...out, clientId: existing.id, client: existing.name };
+      } else {
+        created = { id: uid('cl'), name: typed, type: 'Direct', status: 'Active', notes: '' };
+        out = { ...out, clientId: created.id, client: created.name };
+      }
     } else if (out.clientId) {
       out = { ...out, client: clients.find((c) => c.id === out.clientId)?.name || out.client };
     }
-    onSave(out);
+    onSave(out, created);
   };
   const canSave = (!!f.clientId || !!newCo.trim()) && !!f.role.trim();
   const toggle = (t) => set('functionTags', (f.functionTags || []).includes(t) ? f.functionTags.filter((x) => x !== t) : [...(f.functionTags || []), t]);
@@ -1727,8 +1746,11 @@ function SearchForm({ record, tags, clients, owners, onCreateClient, onClose, on
           </Select>
         </Field>
         {!f.clientId && (
-          <Field label="Or create a new company" span={2}>
+          <Field label="Or type a new company" span={2}>
             <TextInput value={newCo} onChange={(e) => setNewCo(e.target.value)} placeholder="Company name" />
+            <span style={{ fontSize: 11, color: C.mute, marginTop: 5, lineHeight: 1.5 }}>
+              Saving the search creates this company too, so you never enter it twice.
+            </span>
           </Field>
         )}
         <Field label="Role" span={2}><TextInput value={f.role} onChange={(e) => set('role', e.target.value)} placeholder="Chief Revenue Officer" /></Field>
