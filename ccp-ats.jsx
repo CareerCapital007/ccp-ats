@@ -15,16 +15,16 @@ import {
 const C = {
   green: '#173A2D',
   greenMid: '#28513F',
-  greenSoft: '#EAEFEA',
+  greenSoft: '#EDF1EE',
   navy: '#0E2436',
   brass: '#A98545',
-  brassSoft: '#F3ECDF',
-  paper: '#F6F5F1',
+  brassSoft: '#F5EFE3',
+  paper: '#FBFAF7',
   card: '#FFFFFF',
-  line: '#E2DED4',
-  lineSoft: '#EFEDE7',
+  line: '#E7E3DA',
+  lineSoft: '#F0EDE6',
   ink: '#1A2028',
-  mute: '#6E7379',
+  mute: '#767A80',
   red: '#9B3B2E',
   amber: '#B37A1F',
 };
@@ -213,16 +213,45 @@ const downloadCVFile = (rec) => {
 };
 
 /* ---------- small UI atoms ---------- */
+function Eyebrow({ children, color = C.brass, style }) {
+  return (
+    <div style={{ fontFamily: SANS, fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color, fontWeight: 700, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function Headline({ children, size = 20, color = C.green, style }) {
+  return (
+    <div style={{ fontFamily: SERIF, fontSize: size, color, lineHeight: 1.2, letterSpacing: -0.2, ...style }}>
+      {children}
+    </div>
+  );
+}
+
+function SectionHead({ eyebrow, title, action }) {
+  return (
+    <div className="flex flex-wrap items-end justify-between gap-3" style={{ marginBottom: 16, paddingBottom: 12, borderBottom: `1px solid ${C.line}` }}>
+      <div>
+        {eyebrow && <Eyebrow style={{ marginBottom: 5 }}>{eyebrow}</Eyebrow>}
+        <Headline size={22}>{title}</Headline>
+      </div>
+      {action}
+    </div>
+  );
+}
+
 function Pill({ children, color = C.green, filled = false, onClick, title }) {
   return (
     <span
       title={title}
       onClick={onClick}
-      className="inline-flex items-center rounded-full"
+      className="inline-flex items-center"
       style={{
         fontFamily: SANS,
-        fontSize: 10.5,
-        letterSpacing: 0.3,
+        fontSize: 9.5,
+        letterSpacing: 0.9,
+        textTransform: 'uppercase',
         fontWeight: 600,
         padding: '2px 8px',
         color: filled ? '#fff' : color,
@@ -240,7 +269,7 @@ function Pill({ children, color = C.green, filled = false, onClick, title }) {
 function Field({ label, children, span }) {
   return (
     <label className="flex flex-col gap-1" style={{ gridColumn: span ? `span ${span}` : undefined }}>
-      <span style={{ fontFamily: SANS, fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 700 }}>
+      <span style={{ fontFamily: SANS, fontSize: 9, letterSpacing: 1.5, textTransform: 'uppercase', color: C.mute, fontWeight: 700 }}>
         {label}
       </span>
       {children}
@@ -255,7 +284,7 @@ const inputStyle = {
   border: `1px solid ${C.line}`,
   background: '#fff',
   color: C.ink,
-  borderRadius: 3,
+  borderRadius: 0,
   outline: 'none',
   width: '100%',
 };
@@ -277,9 +306,10 @@ function TextArea(props) {
 function Btn({ children, onClick, kind = 'primary', size = 'md', disabled, title }) {
   const base = {
     fontFamily: SANS,
-    fontWeight: 600,
-    letterSpacing: 0.2,
-    borderRadius: 3,
+    fontWeight: 700,
+    letterSpacing: 0.9,
+    textTransform: 'uppercase',
+    borderRadius: 0,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.5 : 1,
     display: 'inline-flex',
@@ -287,7 +317,7 @@ function Btn({ children, onClick, kind = 'primary', size = 'md', disabled, title
     gap: 6,
     whiteSpace: 'nowrap',
   };
-  const sizes = { sm: { fontSize: 11.5, padding: '5px 9px' }, md: { fontSize: 12.5, padding: '8px 13px' } };
+  const sizes = { sm: { fontSize: 9.5, padding: '6px 11px' }, md: { fontSize: 10.5, padding: '10px 18px' } };
   const kinds = {
     primary: { background: C.green, color: '#fff', border: `1px solid ${C.green}` },
     brass: { background: C.brass, color: '#fff', border: `1px solid ${C.brass}` },
@@ -313,13 +343,13 @@ function Modal({ title, onClose, children, wide }) {
         className="w-full"
         style={{ maxWidth: wide ? 880 : 560, background: C.card, border: `1px solid ${C.line}`, marginTop: 24, marginBottom: 40 }}
       >
-        <div className="flex items-center justify-between" style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line}`, background: C.green }}>
-          <h3 style={{ fontFamily: SERIF, fontSize: 17, color: '#fff', margin: 0 }}>{title}</h3>
+        <div className="flex items-center justify-between" style={{ padding: '17px 22px', borderBottom: `1px solid ${C.greenMid}`, background: C.green }}>
+          <h3 style={{ fontFamily: SERIF, fontSize: 19, color: '#fff', margin: 0, letterSpacing: -0.2 }}>{title}</h3>
           <button onClick={onClose} style={{ color: '#fff', opacity: 0.8, cursor: 'pointer' }}>
             <X size={17} />
           </button>
         </div>
-        <div style={{ padding: 18 }}>{children}</div>
+        <div style={{ padding: 22 }}>{children}</div>
       </div>
     </div>
   );
@@ -327,11 +357,16 @@ function Modal({ title, onClose, children, wide }) {
 
 function Empty({ icon: Icon, title, hint, action }) {
   return (
-    <div className="flex flex-col items-center justify-center text-center" style={{ padding: '56px 20px' }}>
-      <Icon size={26} style={{ color: C.brass, marginBottom: 12 }} />
-      <div style={{ fontFamily: SERIF, fontSize: 17, color: C.green, marginBottom: 5 }}>{title}</div>
-      <div style={{ fontFamily: SANS, fontSize: 12.5, color: C.mute, maxWidth: 380, lineHeight: 1.6, marginBottom: 14 }}>{hint}</div>
-      {action}
+    <div style={{ padding: '64px 24px', maxWidth: 560, margin: '0 auto' }}>
+      <div style={{ borderTop: `2px solid ${C.brass}`, paddingTop: 18 }}>
+        <div className="flex items-center gap-2" style={{ marginBottom: 12 }}>
+          <Icon size={15} style={{ color: C.brass }} />
+          <Eyebrow>01 / Begin</Eyebrow>
+        </div>
+        <Headline size={26} style={{ marginBottom: 10 }}>{title}</Headline>
+        <div style={{ fontFamily: SANS, fontSize: 13, color: C.mute, lineHeight: 1.7, marginBottom: 20 }}>{hint}</div>
+        {action}
+      </div>
     </div>
   );
 }
@@ -344,7 +379,8 @@ export default function App() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [err, setErr] = useState(null);
-  const [view, setView] = useState('week');
+  const [view, setView] = useState('candidates');
+  const [mode, setMode] = useState('table');
   const [q, setQ] = useState('');
   const [fTag, setFTag] = useState('');
   const [fSearch, setFSearch] = useState('');
@@ -496,7 +532,7 @@ export default function App() {
     setModal(null);
     setOpen(null);
     if (type === 'candidate') { setView('candidates'); setOpen(id); }
-    else if (type === 'search') { setFSearch(id); setQ(''); setFTag(''); setFOwner(''); setView('pipeline'); }
+    else if (type === 'search') { setFSearch(id); setQ(''); setFTag(''); setFOwner(''); setMode('board'); setView('candidates'); }
     else if (type === 'client') { setView('clients'); setModal({ type: 'client', payload: data.clients.find((c) => c.id === id) }); }
     else if (type === 'contact') { setView('contacts'); setModal({ type: 'contact', payload: data.contacts.find((c) => c.id === id) }); }
   };
@@ -533,36 +569,6 @@ export default function App() {
     });
   }, [data.candidates, q, fTag, fSearch, fOwner]);
 
-  const stale = useMemo(
-    () =>
-      filtered
-        .filter((c) => ACTIVE_STAGES.includes(c.stage))
-        .map((c) => ({ ...c, age: daysSince(c.lastContactAt || c.updatedAt) ?? 999 }))
-        .filter((c) => c.age >= 7)
-        .sort((a, b) => b.age - a.age),
-    [filtered]
-  );
-
-  const dueNext = useMemo(() => {
-    const t = new Date();
-    t.setHours(23, 59, 59, 999);
-    const horizon = t.getTime() + 6 * 86400000;
-    return filtered
-      .filter((c) => c.nextStepDate && new Date(c.nextStepDate).getTime() <= horizon && ACTIVE_STAGES.includes(c.stage))
-      .sort((a, b) => new Date(a.nextStepDate) - new Date(b.nextStepDate));
-  }, [filtered]);
-
-  const weekActivity = useMemo(() => {
-    const wk = startOfWeek();
-    const rows = [];
-    data.candidates.forEach((c) =>
-      (c.notes || []).forEach((n) => {
-        if (new Date(n.ts).getTime() >= wk) rows.push({ ...n, cand: c });
-      })
-    );
-    return rows.sort((a, b) => new Date(b.ts) - new Date(a.ts));
-  }, [data.candidates]);
-
   const exportCSV = () => {
     const cols = ['Name', 'Title', 'Company', 'Function Tags', 'Search', 'Stage', 'Owner', 'Email', 'Phone', 'LinkedIn', 'Location', 'Current Comp', 'Target Comp', 'Source', 'Resume Link', 'Next Step', 'Next Step Date', 'Last Contact', 'Notes Count'];
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
@@ -591,27 +597,25 @@ export default function App() {
   }
 
   const NAV = [
-    { id: 'week', label: 'This Week', icon: CalendarClock },
-    { id: 'pipeline', label: 'Pipeline', icon: ArrowRight },
     { id: 'candidates', label: 'Candidates', icon: Users },
     { id: 'searches', label: 'Searches', icon: Briefcase },
+    { id: 'clients', label: 'Companies', icon: Building2 },
     { id: 'contacts', label: 'Contacts', icon: Mail },
-    { id: 'clients', label: 'Clients', icon: Building2 },
   ];
 
   return (
     <div style={{ background: C.paper, minHeight: '100vh', fontFamily: SANS, color: C.ink }}>
       {/* ---------- masthead ---------- */}
       <div style={{ background: C.green, color: '#fff' }}>
-        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: '14px 18px 12px' }}>
+        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: '18px 22px 14px' }}>
           <div className="flex items-center gap-3">
-            <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 15 L9 9 L12 12 L21 3" stroke={C.brass} strokeWidth="2.4" fill="none" strokeLinecap="square" />
-              <path d="M3 21 L9 15 L12 18 L21 9" stroke="#ffffff" strokeWidth="1.6" fill="none" strokeLinecap="square" opacity="0.55" />
+            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 15 L9 9 L12 12 L21 3" stroke={C.brass} strokeWidth="2.2" fill="none" strokeLinecap="square" />
+              <path d="M3 21 L9 15 L12 18 L21 9" stroke="#ffffff" strokeWidth="1.4" fill="none" strokeLinecap="square" opacity="0.5" />
             </svg>
             <div>
-              <div style={{ fontFamily: SERIF, fontSize: 17, letterSpacing: 0.2, lineHeight: 1.1 }}>Career Capital Partners</div>
-              <div style={{ fontSize: 9.5, letterSpacing: 1.6, textTransform: 'uppercase', color: C.brass, fontWeight: 700, marginTop: 2 }}>
+              <div style={{ fontFamily: SERIF, fontSize: 18, letterSpacing: 0.1, lineHeight: 1.1 }}>Career Capital Partners</div>
+              <div style={{ fontSize: 9, letterSpacing: 2.2, textTransform: 'uppercase', color: C.brass, fontWeight: 700, marginTop: 3 }}>
                 Search Ledger
               </div>
             </div>
@@ -645,10 +649,10 @@ export default function App() {
                 onClick={() => setView(n.id)}
                 className="flex items-center gap-2"
                 style={{
-                  padding: '10px 16px',
-                  fontSize: 11.5,
+                  padding: '11px 18px',
+                  fontSize: 9.5,
                   fontWeight: 700,
-                  letterSpacing: 0.7,
+                  letterSpacing: 1.8,
                   textTransform: 'uppercase',
                   color: on ? C.brass : 'rgba(255,255,255,0.6)',
                   borderBottom: `2px solid ${on ? C.brass : 'transparent'}`,
@@ -663,6 +667,12 @@ export default function App() {
         </div>
       </div>
 
+      <div style={{ background: C.card, borderBottom: `1px solid ${C.line}`, padding: '9px 22px' }}>
+        <span style={{ fontFamily: SERIF, fontSize: 12.5, color: C.mute, fontStyle: 'italic' }}>
+          Leadership is the capital that compounds.
+        </span>
+      </div>
+
       {err && (
         <div className="flex items-center gap-2" style={{ background: '#FBEAE6', color: C.red, padding: '8px 18px', fontSize: 12 }}>
           <AlertCircle size={14} /> {err}
@@ -670,7 +680,7 @@ export default function App() {
       )}
 
       {/* ---------- filter bar ---------- */}
-      {['pipeline', 'candidates'].includes(view) && (
+      {view === 'candidates' && (
         <div className="flex flex-wrap items-center gap-2" style={{ padding: '10px 18px', borderBottom: `1px solid ${C.line}`, background: C.card }}>
           <div className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, padding: '5px 8px', background: '#fff', minWidth: 190, flex: '1 1 190px', maxWidth: 300 }}>
             <SearchIcon size={13} style={{ color: C.mute }} />
@@ -698,28 +708,23 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ padding: 18 }}>
-        {view === 'week' && (
-          <WeekView
-            stale={stale} dueNext={dueNext} activity={weekActivity}
-            searches={data.searches} candidates={data.candidates} tags={tags}
-            onOpen={setOpen} onTouch={logTouch} onAdd={() => setModal({ type: 'candidate' })}
-          />
+      <div style={{ padding: '26px 22px 34px' }}>
+        {view === 'candidates' && mode === 'board' && (
+          <PipelineView rows={filtered} tags={tags} onOpen={setOpen} onStage={setStage}
+            onAdd={() => setModal({ type: 'candidate' })}
+            mode={mode} setMode={setMode} onBulk={() => setModal({ type: 'bulk' })} onCV={() => setModal({ type: 'cv' })} />
         )}
-        {view === 'pipeline' && (
-          <PipelineView rows={filtered} tags={tags} onOpen={setOpen} onStage={setStage} onAdd={() => setModal({ type: 'candidate' })} />
-        )}
-        {view === 'candidates' && (
+        {view === 'candidates' && mode === 'table' && (
           <CandidatesTable rows={filtered} tags={tags} searchById={searchById} onOpen={setOpen} onStage={setStage} onTouch={logTouch}
             onAdd={() => setModal({ type: 'candidate' })} onBulk={() => setModal({ type: 'bulk' })}
             onCV={() => setModal({ type: 'cv' })}
             searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch}
-            onDelete={removeCandidate} />
+            onDelete={removeCandidate} mode={mode} setMode={setMode} />
         )}
         {view === 'searches' && (
           <SearchesView searches={data.searches} candidates={data.candidates} tags={tags} nav={nav}
             onAdd={() => setModal({ type: 'search' })} onEdit={(s) => setModal({ type: 'search', payload: s })}
-            onJump={(id) => { setFSearch(id); setView('pipeline'); }} />
+            onJump={(id) => { setFSearch(id); setMode('board'); setView('candidates'); }} />
         )}
         {view === 'contacts' && (
           <ContactsView contacts={data.contacts} clients={data.clients} nav={nav}
@@ -731,8 +736,8 @@ export default function App() {
         )}
       </div>
 
-      <div style={{ padding: '14px 18px', borderTop: `1px solid ${C.line}`, fontSize: 10.5, color: C.mute, letterSpacing: 0.4 }}>
-        CAREER CAPITAL PARTNERS | Private &amp; Confidential | Records are shared with everyone who has access to this tool
+      <div style={{ padding: '18px 22px', borderTop: `1px solid ${C.line}` }}>
+        <Eyebrow color={C.mute}>Career Capital Partners &nbsp;·&nbsp; Private &amp; Confidential &nbsp;·&nbsp; Shared with everyone who has access</Eyebrow>
       </div>
 
       {/* ---------- modals ---------- */}
@@ -784,140 +789,14 @@ export default function App() {
   );
 }
 
-/* ============================================================
-   VIEW: THIS WEEK
-   ============================================================ */
-function WeekView({ stale, dueNext, activity, searches, candidates, tags, onOpen, onTouch, onAdd }) {
-  const active = candidates.filter((c) => ACTIVE_STAGES.includes(c.stage));
-  const submitted = candidates.filter((c) => ['submitted', 'interview', 'finalist', 'offer'].includes(c.stage));
-  const placed = candidates.filter((c) => c.stage === 'placed');
-  const openSearches = searches.filter((s) => s.status === 'Active');
-
-  const stats = [
-    { n: openSearches.length, l: 'Active searches' },
-    { n: active.length, l: 'Live candidates' },
-    { n: submitted.length, l: 'With client' },
-    { n: stale.length, l: 'Needs a touch', warn: stale.length > 0 },
-    { n: placed.length, l: 'Placed' },
-  ];
-
-  if (!candidates.length && !searches.length) {
-    return (
-      <Empty
-        icon={Briefcase}
-        title="Start the ledger"
-        hint="Add your first search under Searches, then log candidates against it. Every candidate carries function tags, a stage, notes, and a resume link."
-        action={<Btn onClick={onAdd}><Plus size={13} /> Add a candidate</Btn>}
-      />
-    );
-  }
-
-  return (
-    <div className="flex flex-col gap-5">
-      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
-        {stats.map((s) => (
-          <div key={s.l} style={{ background: C.card, border: `1px solid ${C.line}`, borderTop: `3px solid ${s.warn ? C.brass : C.green}`, padding: '13px 14px' }}>
-            <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: s.warn ? C.brass : C.green }}>{s.n}</div>
-            <div style={{ fontSize: 10.5, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, marginTop: 6, fontWeight: 700 }}>{s.l}</div>
-          </div>
-        ))}
-      </div>
-
-      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
-        {/* aging */}
-        <Panel title="Aging" note="No contact in 7+ days">
-          {stale.length === 0 ? (
-            <Quiet>Every live candidate has been touched this week.</Quiet>
-          ) : (
-            stale.slice(0, 12).map((c) => (
-              <Row key={c.id} onClick={() => onOpen(c.id)}>
-                <div className="flex-1" style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-                  <div style={{ fontSize: 11, color: C.mute }}>{c.title || 'No title'} · {stageOf(c.stage).label}</div>
-                </div>
-                <span style={{ fontFamily: SERIF, fontSize: 15, color: c.age >= 21 ? C.red : c.age >= 14 ? C.brass : C.mute, minWidth: 42, textAlign: 'right' }}>
-                  {c.age}d
-                </span>
-                <Btn size="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); onTouch(c.id); }}>Touch</Btn>
-              </Row>
-            ))
-          )}
-        </Panel>
-
-        {/* next steps */}
-        <Panel title="Next steps" note="Due in the next 7 days">
-          {dueNext.length === 0 ? (
-            <Quiet>Nothing scheduled. Open a candidate to set a next step.</Quiet>
-          ) : (
-            dueNext.slice(0, 12).map((c) => (
-              <Row key={c.id} onClick={() => onOpen(c.id)}>
-                <div className="flex-1" style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
-                  <div style={{ fontSize: 11, color: C.mute }}>{c.nextStep || 'Next step not written'}</div>
-                </div>
-                <span style={{ fontSize: 11, color: C.brass, fontWeight: 700 }}>{fmtDate(c.nextStepDate)}</span>
-              </Row>
-            ))
-          )}
-        </Panel>
-
-        {/* activity */}
-        <Panel title="Logged this week" note={`${activity.length} entries since Monday`}>
-          {activity.length === 0 ? (
-            <Quiet>No notes or stage moves yet this week.</Quiet>
-          ) : (
-            activity.slice(0, 18).map((a) => (
-              <Row key={a.id} onClick={() => onOpen(a.cand.id)}>
-                <div className="flex-1" style={{ minWidth: 0 }}>
-                  <div style={{ fontSize: 12.5 }}>
-                    <span style={{ fontWeight: 600 }}>{a.cand.name}</span>
-                    <span style={{ color: C.mute }}> · {a.body}</span>
-                  </div>
-                </div>
-                <span style={{ fontSize: 10.5, color: C.mute }}>{fmtDate(a.ts)}</span>
-              </Row>
-            ))
-          )}
-        </Panel>
-
-        {/* search depth */}
-        <Panel title="Search depth" note="Live candidates per engagement">
-          {searches.length === 0 ? (
-            <Quiet>Add a search to track pipeline depth against it.</Quiet>
-          ) : (
-            searches.filter((s) => s.status !== 'Closed').map((s) => {
-              const mine = candidates.filter((c) => c.searchId === s.id);
-              const live = mine.filter((c) => ACTIVE_STAGES.includes(c.stage)).length;
-              const sub = mine.filter((c) => ['submitted', 'interview', 'finalist', 'offer'].includes(c.stage)).length;
-              const pct = Math.min(100, (live / 12) * 100);
-              return (
-                <div key={s.id} style={{ padding: '9px 0', borderBottom: `1px solid ${C.lineSoft}` }}>
-                  <div className="flex items-baseline justify-between gap-2">
-                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.client}</div>
-                    <div style={{ fontSize: 11, color: C.mute }}>{live} live · {sub} with client</div>
-                  </div>
-                  <div style={{ fontSize: 11, color: C.mute, marginBottom: 5 }}>{s.role}</div>
-                  <div style={{ height: 5, background: C.lineSoft }}>
-                    <div style={{ height: 5, width: `${pct}%`, background: pct >= 66 ? C.green : pct >= 33 ? C.brass : C.red }} />
-                  </div>
-                </div>
-              );
-            })
-          )}
-        </Panel>
-      </div>
-    </div>
-  );
-}
-
 function Panel({ title, note, children }) {
   return (
     <div style={{ background: C.card, border: `1px solid ${C.line}` }}>
-      <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line}` }}>
-        <div style={{ fontFamily: SERIF, fontSize: 15, color: C.green }}>{title}</div>
-        {note && <div style={{ fontSize: 10.5, color: C.mute, letterSpacing: 0.4, marginTop: 2 }}>{note}</div>}
+      <div style={{ padding: '14px 16px 11px', borderBottom: `1px solid ${C.line}` }}>
+        {note && <Eyebrow style={{ marginBottom: 5 }}>{note}</Eyebrow>}
+        <Headline size={16}>{title}</Headline>
       </div>
-      <div style={{ padding: '4px 14px 10px', maxHeight: 330, overflowY: 'auto' }}>{children}</div>
+      <div style={{ padding: '4px 16px 12px', maxHeight: 330, overflowY: 'auto' }}>{children}</div>
     </div>
   );
 }
@@ -928,10 +807,26 @@ function Row({ children, onClick }) {
     </div>
   );
 }
+function ViewSwitch({ mode, setMode }) {
+  return (
+    <div className="flex" style={{ border: `1px solid ${C.line}` }}>
+      {[{ id: 'table', l: 'Table' }, { id: 'board', l: 'Board' }].map((m) => (
+        <button key={m.id} onClick={() => setMode(m.id)}
+          style={{
+            padding: '6px 13px', fontSize: 9.5, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase',
+            cursor: 'pointer', background: mode === m.id ? C.green : '#fff', color: mode === m.id ? '#fff' : C.mute,
+          }}>
+          {m.l}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 function RelatedList({ title, items, empty }) {
   return (
     <div>
-      <div style={{ fontSize: 9.5, letterSpacing: 0.9, textTransform: 'uppercase', color: C.mute, fontWeight: 800, marginBottom: 6 }}>{title}</div>
+      <Eyebrow color={C.mute} style={{ marginBottom: 7 }}>{title}</Eyebrow>
       {items.length === 0 ? (
         <div style={{ fontSize: 11.5, color: C.mute }}>{empty}</div>
       ) : (
@@ -956,18 +851,27 @@ function Quiet({ children }) {
 /* ============================================================
    VIEW: PIPELINE (columns by stage)
    ============================================================ */
-function PipelineView({ rows, tags, onOpen, onStage, onAdd }) {
+function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBulk, onCV }) {
   if (!rows.length) {
     return <Empty icon={Users} title="No candidates match" hint="Clear the filters above, or add someone new to the pipeline." action={<Btn onClick={onAdd}><Plus size={13} /> Add a candidate</Btn>} />;
   }
   return (
+    <div>
+      <SectionHead eyebrow="The pool" title="Candidates"
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewSwitch mode={mode} setMode={setMode} />
+            <Btn kind="ghost" size="sm" onClick={onCV}><UploadCloud size={12} /> Import CVs</Btn>
+            <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add candidate</Btn>
+          </div>
+        } />
     <div className="flex gap-3" style={{ overflowX: 'auto', paddingBottom: 8 }}>
       {STAGES.map((st) => {
         const col = rows.filter((c) => c.stage === st.id);
         return (
           <div key={st.id} style={{ minWidth: 232, width: 232, flexShrink: 0 }}>
             <div className="flex items-center justify-between" style={{ padding: '7px 9px', background: C.card, border: `1px solid ${C.line}`, borderTop: `3px solid ${st.color}` }}>
-              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', color: st.color }}>{st.label}</span>
+              <span style={{ fontSize: 9, fontWeight: 800, letterSpacing: 1.4, textTransform: 'uppercase', color: st.color }}>{st.label}</span>
               <span style={{ fontFamily: SERIF, fontSize: 14, color: C.mute }}>{col.length}</span>
             </div>
             <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
@@ -999,13 +903,14 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd }) {
         );
       })}
     </div>
+    </div>
   );
 }
 
 /* ============================================================
    VIEW: CANDIDATE TABLE
    ============================================================ */
-function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete }) {
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete, mode, setMode }) {
   const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
   const [sel, setSel] = useState([]);
   const [confirmId, setConfirmId] = useState(null);
@@ -1033,7 +938,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
   const H = ({ k, children, w }) => (
     <th
       onClick={() => setSort((s) => ({ key: k, dir: s.key === k ? -s.dir : 1 }))}
-      style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 800, cursor: 'pointer', width: w, whiteSpace: 'nowrap' }}
+      style={{ textAlign: 'left', padding: '11px 10px', fontSize: 9, letterSpacing: 1.5, textTransform: 'uppercase', color: C.mute, fontWeight: 800, cursor: 'pointer', width: w, whiteSpace: 'nowrap' }}
     >
       {children}
     </th>
@@ -1053,11 +958,15 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
 
   return (
     <div>
-      <div className="flex justify-end gap-2" style={{ marginBottom: 10 }}>
-        <Btn kind="ghost" size="sm" onClick={onBulk}><Upload size={12} /> Paste a list</Btn>
-        <Btn kind="ghost" size="sm" onClick={onCV}><UploadCloud size={12} /> Import CVs</Btn>
-        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add candidate</Btn>
-      </div>
+      <SectionHead eyebrow="The pool" title="Candidates"
+        action={
+          <div className="flex flex-wrap items-center gap-2">
+            <ViewSwitch mode={mode} setMode={setMode} />
+            <Btn kind="ghost" size="sm" onClick={onBulk}><Upload size={12} /> Paste a list</Btn>
+            <Btn kind="ghost" size="sm" onClick={onCV}><UploadCloud size={12} /> Import CVs</Btn>
+            <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add candidate</Btn>
+          </div>
+        } />
       {sel.length > 0 && (
         <div className="flex flex-wrap items-center gap-2" style={{ background: C.greenSoft, border: `1px solid ${C.green}33`, padding: '9px 12px', marginBottom: 10 }}>
           <span style={{ fontFamily: SERIF, fontSize: 15, color: C.green, minWidth: 78 }}>{sel.length} selected</span>
@@ -1165,9 +1074,8 @@ function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump }
   }
   return (
     <div>
-      <div className="flex justify-end" style={{ marginBottom: 10 }}>
-        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add search</Btn>
-      </div>
+      <SectionHead eyebrow="Mandates" title="Active searches"
+        action={<Btn size="sm" onClick={onAdd}><Plus size={12} /> Add search</Btn>} />
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
         {searches.map((s) => {
           const mine = candidates.filter((c) => c.searchId === s.id);
@@ -1240,9 +1148,8 @@ function ClientsView({ clients, nav, onAdd, onEdit }) {
   }
   return (
     <div>
-      <div className="flex justify-end" style={{ marginBottom: 10 }}>
-        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add company</Btn>
-      </div>
+      <SectionHead eyebrow="The accounts" title="Companies"
+        action={<Btn size="sm" onClick={onAdd}><Plus size={12} /> Add company</Btn>} />
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))' }}>
         {clients.map((cl) => {
           const srch = nav.rel.searchesOfClient(cl.id);
@@ -1737,7 +1644,9 @@ function ContactsView({ contacts, clients, onAdd, onEdit }) {
 
   return (
     <div>
-      <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: 10 }}>
+      <SectionHead eyebrow="The relationships" title="Client contacts"
+        action={<Btn size="sm" onClick={onAdd}><Plus size={12} /> Add contact</Btn>} />
+      <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: 14 }}>
         <div className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, padding: '5px 8px', background: '#fff', minWidth: 190, flex: '1 1 190px', maxWidth: 300 }}>
           <SearchIcon size={13} style={{ color: C.mute }} />
           <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts"
@@ -1748,7 +1657,6 @@ function ContactsView({ contacts, clients, onAdd, onEdit }) {
           {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
         </Select>
         <span style={{ fontSize: 11.5, color: C.mute, marginLeft: 'auto' }}>{rows.length} shown</span>
-        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add contact</Btn>
       </div>
 
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))' }}>
@@ -1933,11 +1841,10 @@ function ClientForm({ record, nav, onClose, onSave }) {
             {['Prospect', 'Active', 'Past'].map((t) => <option key={t}>{t}</option>)}
           </Select>
         </Field>
-        <Field label="Contact name"><TextInput value={f.contactName} onChange={(e) => set('contactName', e.target.value)} /></Field>
-        <Field label="Contact title"><TextInput value={f.contactTitle} onChange={(e) => set('contactTitle', e.target.value)} /></Field>
-        <Field label="Email"><TextInput value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
-        <Field label="Phone"><TextInput value={f.phone} onChange={(e) => set('phone', e.target.value)} /></Field>
         <Field label="Notes" span={2}><TextArea rows={3} value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+        <div style={{ gridColumn: 'span 2', fontSize: 11.5, color: C.mute, lineHeight: 1.6 }}>
+          People at this company are kept under Contacts, not here, so nothing is entered twice.
+        </div>
       </div>
 
       {record && (
