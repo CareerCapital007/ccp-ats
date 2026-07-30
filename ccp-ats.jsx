@@ -359,8 +359,8 @@ function Modal({ title, onClose, children, wide }) {
         style={{ maxWidth: wide ? 880 : 560, background: C.card, border: `1px solid ${C.line}`, marginTop: 24, marginBottom: 40 }}
       >
         <div className="flex items-center justify-between" style={{ padding: '17px 22px', background: C.green }}>
-          <h3 style={{ fontFamily: SERIF, fontSize: 19, color: '#fff', margin: 0, letterSpacing: -0.2 }}>{title}</h3>
-          <button onClick={onClose} style={{ color: '#fff', opacity: 0.8, cursor: 'pointer' }}>
+          <h3 style={{ fontFamily: SERIF, fontSize: 19, color: C.brass, margin: 0, letterSpacing: -0.2 }}>{title}</h3>
+          <button onClick={onClose} style={{ color: C.brass, opacity: 0.8, cursor: 'pointer' }}>
             <X size={17} />
           </button>
         </div>
@@ -830,6 +830,7 @@ export default function App() {
           search={modal.payload}
           candidates={data.candidates}
           searchById={searchById}
+          tags={tags}
           onClose={() => setModal(null)}
           onAssign={(ids) => {
             addToSearch(ids, modal.payload.id);
@@ -913,7 +914,8 @@ function ViewSwitch({ mode, setMode }) {
         <button key={m.id} onClick={() => setMode(m.id)}
           style={{
             padding: '6px 13px', fontSize: 9.5, fontWeight: 700, letterSpacing: 1.2, textTransform: 'uppercase',
-            cursor: 'pointer', background: mode === m.id ? C.green : '#fff', color: mode === m.id ? '#fff' : C.mute,
+            cursor: 'pointer', background: mode === m.id ? C.brassSoft : '#fff', color: C.brass,
+            opacity: mode === m.id ? 1 : 0.6, fontWeight: mode === m.id ? 700 : 500,
           }}>
           {m.l}
         </button>
@@ -1420,11 +1422,11 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
         <div style={{ background: C.green, color: '#fff', padding: '16px 18px' }}>
           <div className="flex items-start justify-between gap-3">
             <div style={{ minWidth: 0 }}>
-              <div style={{ fontFamily: SERIF, fontSize: 21, lineHeight: 1.15 }}>{c.name}</div>
+              <div style={{ fontFamily: SERIF, fontSize: 21, lineHeight: 1.15, color: C.brass }}>{c.name}</div>
               <div style={{ fontSize: 12.5, opacity: 0.8, marginTop: 3 }}>{c.title}{c.company ? ` · ${c.company}` : ''}</div>
               <div style={{ fontSize: 11.5, opacity: 0.6 }}>{c.location}</div>
             </div>
-            <button onClick={onClose} style={{ color: '#fff', cursor: 'pointer' }}><X size={18} /></button>
+            <button onClick={onClose} style={{ color: C.brass, cursor: 'pointer' }}><X size={18} /></button>
           </div>
           <div className="flex flex-wrap items-center gap-2" style={{ marginTop: 12 }}>
             <Pill color={C.brass} filled>{stageOf(furthestStage(c)).label}</Pill>
@@ -1507,7 +1509,7 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
           {[{ id: 'notes', l: 'Notes' }, { id: 'resume', l: 'Resume' }, { id: 'details', l: 'Edit profile' }].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{ padding: '9px 15px', fontSize: 11, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', cursor: 'pointer',
-                color: tab === t.id ? C.green : C.mute, borderBottom: `2px solid ${tab === t.id ? C.brass : 'transparent'}` }}>
+                color: C.brass, opacity: tab === t.id ? 1 : 0.6, borderBottom: `2px solid ${tab === t.id ? C.brass : 'transparent'}` }}>
               {t.l}
             </button>
           ))}
@@ -1847,9 +1849,10 @@ function ContactsView({ contacts, clients, onAdd, onEdit }) {
   );
 }
 
-function AssignCandidates({ search, candidates, searchById, onClose, onAssign, onCreate }) {
+function AssignCandidates({ search, candidates, searchById, tags, onClose, onAssign, onCreate }) {
   const [q, setQ] = useState('');
   const [sel, setSel] = useState([]);
+  const [preview, setPreview] = useState(null);
 
   const needle = q.trim().toLowerCase();
   const matches = useMemo(() => {
@@ -1862,7 +1865,18 @@ function AssignCandidates({ search, candidates, searchById, onClose, onAssign, o
 
   const already = candidates.filter((c) => searchIdsOf(c).includes(search.id)).length;
   const exactHit = candidates.some((c) => (c.name || '').toLowerCase() === needle);
-  const toggle = (id) => setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const toggle = (id) => {
+    setPreview(id);
+    setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  };
+
+  // as soon as the typing narrows to one person, show them
+  useEffect(() => {
+    if (matches.length === 1) setPreview(matches[0].id);
+    else if (needle && !matches.some((m) => m.id === preview)) setPreview(null);
+  }, [matches, needle, preview]);
+
+  const shown = candidates.find((c) => c.id === preview);
 
   return (
     <Modal title={`Add candidates to ${search.role}`} onClose={onClose} wide>
@@ -1884,35 +1898,90 @@ function AssignCandidates({ search, candidates, searchById, onClose, onAssign, o
         />
       </div>
 
-      <div style={{ maxHeight: 340, overflowY: 'auto', marginTop: 10, border: `1px solid ${C.lineSoft}` }}>
-        {matches.length === 0 && (
-          <div style={{ padding: 16, fontSize: 12.5, color: C.mute, lineHeight: 1.6 }}>
-            {needle ? 'Nobody in the system matches that.' : 'No unassigned candidates yet.'}
-          </div>
-        )}
-        {matches.map((c) => {
-          const on = sel.includes(c.id);
-          const other = searchIdsOf(c).map((sid) => searchById[sid]).filter(Boolean);
-          return (
-            <div
-              key={c.id}
-              onClick={() => toggle(c.id)}
-              className="flex items-center gap-3"
-              style={{ padding: '9px 12px', borderBottom: `1px solid ${C.lineSoft}`, cursor: 'pointer', background: on ? C.brassSoft : C.card }}
-            >
-              <input type="checkbox" checked={on} readOnly />
-              <div className="flex-1" style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</div>
-                <div style={{ fontSize: 11, color: C.mute }}>
-                  {[c.title, c.company].filter(Boolean).join(' · ') || 'No title on file'}
+      <div className="flex gap-3" style={{ marginTop: 10, alignItems: 'flex-start', flexWrap: 'wrap' }}>
+        <div style={{ flex: '1 1 320px', minWidth: 260, maxHeight: 360, overflowY: 'auto', border: `1px solid ${C.lineSoft}` }}>
+          {matches.length === 0 && (
+            <div style={{ padding: 16, fontSize: 12.5, color: C.mute, lineHeight: 1.6 }}>
+              {needle ? 'Nobody in the ledger matches that.' : 'No unassigned candidates yet.'}
+            </div>
+          )}
+          {matches.map((c) => {
+            const on = sel.includes(c.id);
+            const other = searchIdsOf(c).map((sid) => searchById[sid]).filter(Boolean);
+            return (
+              <div
+                key={c.id}
+                onClick={() => toggle(c.id)}
+                onMouseEnter={() => setPreview(c.id)}
+                className="flex items-center gap-3"
+                style={{
+                  padding: '9px 12px', borderBottom: `1px solid ${C.lineSoft}`, cursor: 'pointer',
+                  background: on ? C.brassSoft : preview === c.id ? C.greenSoft : C.card,
+                }}
+              >
+                <input type="checkbox" checked={on} readOnly />
+                <div className="flex-1" style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: C.mute }}>
+                    {[c.title, c.company].filter(Boolean).join(' · ') || 'No title on file'}
+                  </div>
+                </div>
+                <div className="flex flex-wrap gap-1" style={{ justifyContent: 'flex-end' }}>
+                  {other.slice(0, 2).map((o) => <Pill key={o.id} color={C.brass}>{o.role}</Pill>)}
                 </div>
               </div>
-              <div className="flex flex-wrap gap-1" style={{ justifyContent: 'flex-end' }}>
-                {other.map((o) => <Pill key={o.id} color={C.brass}>{o.role}</Pill>)}
+            );
+          })}
+        </div>
+
+        <div style={{ flex: '1 1 260px', minWidth: 240, border: `1px solid ${C.lineSoft}`, background: C.card, padding: 14, minHeight: 200 }}>
+          {!shown ? (
+            <div style={{ fontSize: 12, color: C.mute, lineHeight: 1.65 }}>
+              Type a name. If they are already in the ledger their profile shows here before you add them.
+            </div>
+          ) : (
+            <div>
+              <Eyebrow style={{ marginBottom: 8 }}>In the ledger</Eyebrow>
+              <Headline size={19} style={{ marginBottom: 3 }}>{shown.name}</Headline>
+              <div style={{ fontSize: 12, color: C.mute, lineHeight: 1.5 }}>
+                {[shown.title, shown.company].filter(Boolean).join(' · ') || 'No title on file'}
+              </div>
+              {shown.location && <div style={{ fontSize: 11.5, color: C.mute, marginTop: 2 }}>{shown.location}</div>}
+
+              <div className="flex flex-wrap gap-1" style={{ marginTop: 10 }}>
+                {(shown.functionTags || []).map((t) => <Pill key={t} color={tagColor(tags || [], t)}>{t}</Pill>)}
+              </div>
+
+              <div className="flex flex-col gap-1" style={{ marginTop: 11, fontSize: 11.5 }}>
+                {shown.email && <span className="flex items-center gap-1.5" style={{ color: C.green }}><Mail size={11} /> {shown.email}</span>}
+                {shown.phone && <span className="flex items-center gap-1.5" style={{ color: C.mute }}><Phone size={11} /> {shown.phone}</span>}
+                {shown.linkedin && <span className="flex items-center gap-1.5" style={{ color: C.mute }}><Linkedin size={11} /> LinkedIn on file</span>}
+                {(shown.resumeLink || shown.hasResumeText || shown.hasCvFile) &&
+                  <span className="flex items-center gap-1.5" style={{ color: C.mute }}><FileText size={11} /> Resume on file</span>}
+              </div>
+
+              <div style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.lineSoft}` }}>
+                <Eyebrow color={C.mute} style={{ marginBottom: 6 }}>Already running in</Eyebrow>
+                {searchIdsOf(shown).length === 0 ? (
+                  <div style={{ fontSize: 11.5, color: C.mute }}>No other searches.</div>
+                ) : (
+                  searchIdsOf(shown).map((sid) => (
+                    <div key={sid} className="flex items-center justify-between gap-2" style={{ fontSize: 11.5, padding: '3px 0' }}>
+                      <span style={{ fontWeight: 600 }}>{searchById[sid]?.role || 'Search'}</span>
+                      <span style={{ color: stageOf(stageFor(shown, sid)).color, fontWeight: 600 }}>
+                        {stageOf(stageFor(shown, sid)).label}
+                      </span>
+                    </div>
+                  ))
+                )}
+              </div>
+
+              <div style={{ marginTop: 11, fontSize: 11, color: C.mute }}>
+                {(shown.notes || []).length} notes · last contact {fmtDate(shown.lastContactAt || shown.updatedAt)}
               </div>
             </div>
-          );
-        })}
+          )}
+        </div>
       </div>
 
       {needle && !exactHit && (
