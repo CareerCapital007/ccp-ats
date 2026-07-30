@@ -49,6 +49,14 @@ const STAGES = [
   { id: 'passed', label: 'Passed', color: '#9B3B2E' },
 ];
 const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
+const searchIdsOf = (c) => (c.searchIds && c.searchIds.length ? c.searchIds : c.searchId ? [c.searchId] : []);
+const stageFor = (c, sid) => (sid && c.stages && c.stages[sid]) || c.stage || 'identified';
+const furthestStage = (c) => {
+  const ids = searchIdsOf(c);
+  if (!ids.length || !c.stages) return c.stage || 'identified';
+  const idx = ids.map((id) => STAGES.findIndex((s) => s.id === stageFor(c, id)));
+  return STAGES[Math.max(0, ...idx)].id;
+};
 const ACTIVE_STAGES = ['identified', 'outreach', 'screened', 'submitted', 'interview', 'finalist', 'offer'];
 
 const TAG_COLORS = ['#173A2D', '#A98545', '#3F6C8A', '#7A4A6B', '#8A6A2E', '#2F6B5A', '#9B3B2E', '#4A5568'];
@@ -402,9 +410,18 @@ export default function App() {
             contacts: parsed.contacts || [],
             meta: { tags: parsed.meta?.tags?.length ? parsed.meta.tags : DEFAULT_TAGS, owners: parsed.meta?.owners || SEED.meta.owners },
           };
+          // Older candidates carried a single searchId. Widen to a list, and give
+          // each search its own stage so one person can run in several processes.
+          next.candidates = next.candidates.map((c) => {
+            if (c.searchIds) return c;
+            const ids = c.searchId ? [c.searchId] : [];
+            const stages = c.searchId ? { [c.searchId]: c.stage || 'identified' } : {};
+            return { ...c, searchIds: ids, stages };
+          });
+
           // Older searches stored the client as loose text. Bind each one to a real
           // company record so every entity can be reached from every other.
-          let changed = false;
+          let changed = true;
           const clients = [...next.clients];
           next.searches = next.searches.map((sr) => {
             if (sr.clientId) return sr;
@@ -468,10 +485,44 @@ export default function App() {
   const logTouch = (id) =>
     patchCandidate(id, { lastContactAt: nowISO() }, 'Contact logged');
 
-  const setStage = (id, stage) => {
+  const setStage = (id, stage, sid) => {
     const c = data.candidates.find((x) => x.id === id);
-    if (!c || c.stage === stage) return;
-    patchCandidate(id, { stage, lastContactAt: nowISO() }, `Stage moved to ${stageOf(stage).label}`);
+    if (!c) return;
+    const label = sid && searchById[sid]
+      ? `${searchById[sid].role}: stage moved to ${stageOf(stage).label}`
+      : `Stage moved to ${stageOf(stage).label}`;
+    const patch = { stage, lastContactAt: nowISO() };
+    if (sid) patch.stages = { ...(c.stages || {}), [sid]: stage };
+    patchCandidate(id, patch, label);
+  };
+
+  // adds a search to a candidate rather than replacing what they already run in
+  const addToSearch = (ids, sid) => {
+    const set = new Set(ids);
+    const sr = data.searches.find((x) => x.id === sid);
+    const next = data.candidates.map((c) => {
+      if (!set.has(c.id)) return c;
+      const cur = searchIdsOf(c);
+      if (cur.includes(sid)) return c;
+      return {
+        ...c,
+        searchIds: [...cur, sid],
+        stages: { ...(c.stages || {}), [sid]: 'identified' },
+        updatedAt: nowISO(),
+        notes: [...(c.notes || []), { id: uid('n'), ts: nowISO(), kind: 'system', body: `Added to ${sr?.client} - ${sr?.role}` }],
+      };
+    });
+    persist({ ...data, candidates: next });
+  };
+
+  const removeFromSearch = (id, sid) => {
+    const c = data.candidates.find((x) => x.id === id);
+    if (!c) return;
+    const sr = searchById[sid];
+    const stages = { ...(c.stages || {}) };
+    delete stages[sid];
+    patchCandidate(id, { searchIds: searchIdsOf(c).filter((x) => x !== sid), stages },
+      `Removed from ${sr?.client} - ${sr?.role}`);
   };
 
   const bulkPatch = (ids, patch, label) => {
@@ -540,15 +591,15 @@ export default function App() {
   const rel = useMemo(() => ({
     searchesOfClient: (id) => data.searches.filter((s) => s.clientId === id),
     contactsOfClient: (id) => data.contacts.filter((c) => c.clientId === id),
-    candidatesOfSearch: (id) => data.candidates.filter((c) => c.searchId === id),
+    candidatesOfSearch: (id) => data.candidates.filter((c) => searchIdsOf(c).includes(id)),
     candidatesOfClient: (id) => {
       const ids = new Set(data.searches.filter((s) => s.clientId === id).map((s) => s.id));
-      return data.candidates.filter((c) => ids.has(c.searchId));
+      return data.candidates.filter((c) => searchIdsOf(c).some((sid) => ids.has(sid)));
     },
     clientOfSearch: (sid) => clientById[searchById[sid]?.clientId],
     contactsForCandidate: (cand) => {
-      const cid = searchById[cand.searchId]?.clientId;
-      return cid ? data.contacts.filter((c) => c.clientId === cid) : [];
+      const cids = new Set(searchIdsOf(cand).map((sid) => searchById[sid]?.clientId).filter(Boolean));
+      return data.contacts.filter((c) => cids.has(c.clientId));
     },
   }), [data, clientById, searchById]);
 
@@ -558,7 +609,7 @@ export default function App() {
     const needle = q.trim().toLowerCase();
     return data.candidates.filter((c) => {
       if (fTag && !(c.functionTags || []).includes(fTag)) return false;
-      if (fSearch && c.searchId !== fSearch) return false;
+      if (fSearch && !searchIdsOf(c).includes(fSearch)) return false;
       if (fOwner && c.owner !== fOwner) return false;
       if (!needle) return true;
       return [c.name, c.title, c.company, c.location, c.source, c.nextStep]
@@ -575,8 +626,8 @@ export default function App() {
     const rows = filtered.map((c) =>
       [
         c.name, c.title, c.company, (c.functionTags || []).join('; '),
-        searchById[c.searchId]?.role ? `${searchById[c.searchId].client} - ${searchById[c.searchId].role}` : '',
-        stageOf(c.stage).label, c.owner, c.email, c.phone, c.linkedin, c.location,
+        searchIdsOf(c).map((sid) => searchById[sid] ? `${searchById[sid].client} - ${searchById[sid].role}` : '').filter(Boolean).join('; '),
+        searchIdsOf(c).map((sid) => `${searchById[sid]?.role || 'Search'}: ${stageOf(stageFor(c, sid)).label}`).join('; ') || stageOf(c.stage).label, c.owner, c.email, c.phone, c.linkedin, c.location,
         c.compCurrent, c.compTarget, c.source, c.resumeLink, c.nextStep,
         c.nextStepDate ? fmtDate(c.nextStepDate) : '', fmtDate(c.lastContactAt || c.updatedAt), (c.notes || []).length,
       ].map(esc).join(',')
@@ -711,7 +762,7 @@ export default function App() {
       <div style={{ padding: '26px 22px 34px' }}>
         {view === 'candidates' && mode === 'board' && (
           <PipelineView rows={filtered} tags={tags} onOpen={setOpen} onStage={setStage}
-            onAdd={() => setModal({ type: 'candidate' })}
+            onAdd={() => setModal({ type: 'candidate' })} activeSearch={fSearch} searchById={searchById}
             mode={mode} setMode={setMode} onBulk={() => setModal({ type: 'bulk' })} onCV={() => setModal({ type: 'cv' })} />
         )}
         {view === 'candidates' && mode === 'table' && (
@@ -719,7 +770,8 @@ export default function App() {
             onAdd={() => setModal({ type: 'candidate' })} onBulk={() => setModal({ type: 'bulk' })}
             onCV={() => setModal({ type: 'cv' })}
             searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch}
-            onDelete={removeCandidate} mode={mode} setMode={setMode} />
+            onDelete={removeCandidate} mode={mode} setMode={setMode}
+            activeSearch={fSearch} onAddToSearch={addToSearch} />
         )}
         {view === 'searches' && (
           <SearchesView searches={data.searches} candidates={data.candidates} tags={tags} nav={nav}
@@ -763,13 +815,14 @@ export default function App() {
           searchById={searchById}
           onClose={() => setModal(null)}
           onAssign={(ids) => {
-            bulkPatch(ids, { searchId: modal.payload.id }, `Added to ${modal.payload.client} - ${modal.payload.role}`);
+            addToSearch(ids, modal.payload.id);
             setModal(null);
           }}
           onCreate={(name) => {
             const c = {
               id: uid('c'), name, title: '', company: '', email: '', phone: '', linkedin: '', location: '',
-              functionTags: modal.payload.functionTags || [], searchId: modal.payload.id, stage: 'identified',
+              functionTags: modal.payload.functionTags || [], searchIds: [modal.payload.id],
+              stages: { [modal.payload.id]: 'identified' }, stage: 'identified',
               owner: modal.payload.owner || '', source: 'Added from search', compCurrent: '', compTarget: '',
               resumeLink: '', nextStep: '', nextStepDate: '', lastContactAt: nowISO(),
               createdAt: nowISO(), updatedAt: nowISO(),
@@ -809,6 +862,8 @@ export default function App() {
           onClose={() => setOpen(null)}
           onPatch={patchCandidate}
           onStage={setStage}
+          onAddToSearch={addToSearch}
+          onRemoveFromSearch={removeFromSearch}
           onDelete={(id) => { removeCandidate(id); setOpen(null); }}
         />
       )}
@@ -878,13 +933,14 @@ function Quiet({ children }) {
 /* ============================================================
    VIEW: PIPELINE (columns by stage)
    ============================================================ */
-function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBulk, onCV }) {
+function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBulk, onCV, activeSearch, searchById }) {
   if (!rows.length) {
     return <Empty icon={Users} title="No candidates match" hint="Clear the filters above, or add someone new to the pipeline." action={<Btn onClick={onAdd}><Plus size={13} /> Add a candidate</Btn>} />;
   }
   return (
     <div>
-      <SectionHead eyebrow="The pool" title="Candidates"
+      <SectionHead eyebrow={activeSearch && searchById[activeSearch] ? searchById[activeSearch].client : 'The pool'}
+        title={activeSearch && searchById[activeSearch] ? searchById[activeSearch].role : 'Candidates'}
         action={
           <div className="flex flex-wrap items-center gap-2">
             <ViewSwitch mode={mode} setMode={setMode} />
@@ -894,7 +950,7 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBul
         } />
     <div className="flex gap-3" style={{ overflowX: 'auto', paddingBottom: 8 }}>
       {STAGES.map((st) => {
-        const col = rows.filter((c) => c.stage === st.id);
+        const col = rows.filter((c) => stageFor(c, activeSearch) === st.id);
         return (
           <div key={st.id} style={{ minWidth: 232, width: 232, flexShrink: 0 }}>
             <div className="flex items-center justify-between" style={{ padding: '7px 9px', background: C.card, border: `1px solid ${C.line}`, borderTop: `3px solid ${st.color}` }}>
@@ -915,9 +971,9 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBul
                   <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
                     <span style={{ fontSize: 10, color: C.mute }}>{daysSince(c.lastContactAt || c.updatedAt) ?? 0}d since contact</span>
                     <select
-                      value={c.stage}
+                      value={stageFor(c, activeSearch)}
                       onClick={(e) => e.stopPropagation()}
-                      onChange={(e) => onStage(c.id, e.target.value)}
+                      onChange={(e) => onStage(c.id, e.target.value, activeSearch)}
                       style={{ fontSize: 10, border: `1px solid ${C.line}`, borderRadius: 2, padding: '1px 2px', color: C.mute, background: '#fff' }}
                     >
                       {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
@@ -937,7 +993,7 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBul
 /* ============================================================
    VIEW: CANDIDATE TABLE
    ============================================================ */
-function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete, mode, setMode }) {
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete, mode, setMode, activeSearch, onAddToSearch }) {
   const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
   const [sel, setSel] = useState([]);
   const [confirmId, setConfirmId] = useState(null);
@@ -956,7 +1012,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
   const sorted = useMemo(() => {
     const v = (c) => {
       if (sort.key === 'age') return daysSince(c.lastContactAt || c.updatedAt) ?? 0;
-      if (sort.key === 'stage') return STAGES.findIndex((s) => s.id === c.stage);
+      if (sort.key === 'stage') return STAGES.findIndex((s) => s.id === (activeSearch ? stageFor(c, activeSearch) : furthestStage(c)));
       return (c[sort.key] || '').toString().toLowerCase();
     };
     return [...rows].sort((a, b) => (v(a) > v(b) ? sort.dir : v(a) < v(b) ? -sort.dir : 0));
@@ -998,13 +1054,14 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
         <div className="flex flex-wrap items-center gap-2" style={{ background: C.greenSoft, border: `1px solid ${C.green}33`, padding: '9px 12px', marginBottom: 10 }}>
           <span style={{ fontFamily: SERIF, fontSize: 15, color: C.green, minWidth: 78 }}>{sel.length} selected</span>
 
-          <Select value="" onChange={(e) => e.target.value && apply({ searchId: e.target.value }, `Assigned to ${searchById[e.target.value]?.client || 'a search'}`)} style={{ width: 'auto', minWidth: 165 }}>
-            <option value="">Assign to search</option>
+          <Select value="" onChange={(e) => { if (e.target.value) { onAddToSearch(sel, e.target.value); setSel([]); } }} style={{ width: 'auto', minWidth: 165 }}>
+            <option value="">Add to a search</option>
             {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
           </Select>
 
-          <Select value="" onChange={(e) => e.target.value && apply({ stage: e.target.value, lastContactAt: nowISO() }, `Stage moved to ${stageOf(e.target.value).label}`)} style={{ width: 'auto', minWidth: 145 }}>
-            <option value="">Set stage</option>
+          <Select value="" disabled={!activeSearch} title={activeSearch ? '' : 'Filter by a search first, since stage is per search'}
+            onChange={(e) => { if (e.target.value) { sel.forEach((id) => onStage(id, e.target.value, activeSearch)); setSel([]); } }} style={{ width: 'auto', minWidth: 145 }}>
+            <option value="">{activeSearch ? 'Set stage' : 'Set stage (filter first)'}</option>
             {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
           </Select>
 
@@ -1039,7 +1096,6 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
           <tbody>
             {sorted.map((c) => {
               const age = daysSince(c.lastContactAt || c.updatedAt) ?? 0;
-              const s = searchById[c.searchId];
               return (
                 <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: selSet.has(c.id) ? C.brassSoft : 'transparent' }}>
                   <td style={{ padding: '9px 0 9px 10px' }}>
@@ -1055,12 +1111,29 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
                       {(c.functionTags || []).map((t) => <Pill key={t} color={tagColor(tags, t)}>{t}</Pill>)}
                     </div>
                   </td>
-                  <td style={{ padding: '9px 10px', fontSize: 11.5, color: C.mute }}>{s ? `${s.client} · ${s.role}` : '-'}</td>
                   <td style={{ padding: '9px 10px' }}>
-                    <select value={c.stage} onChange={(e) => onStage(c.id, e.target.value)}
-                      style={{ fontSize: 11.5, padding: '4px 5px', border: `1px solid ${C.line}`, background: '#fff', color: stageOf(c.stage).color, fontWeight: 700, width: '100%' }}>
-                      {STAGES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
-                    </select>
+                    <div className="flex flex-wrap gap-1">
+                      {searchIdsOf(c).length === 0 && <span style={{ fontSize: 11.5, color: C.mute }}>-</span>}
+                      {searchIdsOf(c).map((sid) => (
+                        <Pill key={sid} color={sid === activeSearch ? C.brass : C.mute}>
+                          {searchById[sid]?.role || 'Search'}
+                        </Pill>
+                      ))}
+                    </div>
+                  </td>
+                  <td style={{ padding: '9px 10px' }}>
+                    {activeSearch ? (
+                      <select value={stageFor(c, activeSearch)} onChange={(e) => onStage(c.id, e.target.value, activeSearch)}
+                        style={{ fontSize: 11.5, padding: '4px 5px', border: `1px solid ${C.line}`, background: '#fff', color: stageOf(stageFor(c, activeSearch)).color, fontWeight: 700, width: '100%' }}>
+                        {STAGES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+                      </select>
+                    ) : (
+                      <span title="Stage is tracked per search. Filter by a search to change it."
+                        style={{ fontSize: 11.5, color: stageOf(furthestStage(c)).color, fontWeight: 700 }}>
+                        {stageOf(furthestStage(c)).label}
+                        {searchIdsOf(c).length > 1 && <span style={{ color: C.mute, fontWeight: 400 }}> (furthest)</span>}
+                      </span>
+                    )}
                   </td>
                   <td style={{ padding: '9px 10px', fontSize: 11.5 }}>{c.owner || '-'}</td>
                   <td style={{ padding: '9px 10px', fontFamily: SERIF, fontSize: 14, color: age >= 21 ? C.red : age >= 7 ? C.brass : C.mute }}>{age}d</td>
@@ -1105,7 +1178,7 @@ function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump, 
         action={<Btn size="sm" onClick={onAdd}><Plus size={12} /> Add search</Btn>} />
       <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
         {searches.map((s) => {
-          const mine = candidates.filter((c) => c.searchId === s.id);
+          const mine = candidates.filter((c) => searchIdsOf(c).includes(s.id));
           const statusColor = s.status === 'Active' ? C.green : s.status === 'On Hold' ? C.brass : s.status === 'Business Development' ? '#3F6C8A' : C.mute;
           return (
             <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `3px solid ${statusColor}`, padding: 14 }}>
@@ -1225,7 +1298,7 @@ function ClientsView({ clients, nav, onAdd, onEdit }) {
 /* ============================================================
    CANDIDATE DRAWER
    ============================================================ */
-function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPatch, onStage, onDelete }) {
+function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPatch, onStage, onDelete, onAddToSearch, onRemoveFromSearch }) {
   const [note, setNote] = useState('');
   const [resume, setResume] = useState('');
   const [resumeLoaded, setResumeLoaded] = useState(false);
@@ -1337,10 +1410,7 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
             <button onClick={onClose} style={{ color: '#fff', cursor: 'pointer' }}><X size={18} /></button>
           </div>
           <div className="flex flex-wrap items-center gap-2" style={{ marginTop: 12 }}>
-            <select value={c.stage} onChange={(e) => onStage(c.id, e.target.value)}
-              style={{ fontSize: 11.5, fontWeight: 700, padding: '5px 7px', background: C.brass, color: '#fff', border: 'none' }}>
-              {STAGES.map((s) => <option key={s.id} value={s.id} style={{ color: C.ink }}>{s.label}</option>)}
-            </select>
+            <Pill color={C.brass} filled>{stageOf(furthestStage(c)).label}</Pill>
             <span style={{ fontSize: 11, opacity: 0.7 }}>Last contact {fmtDate(c.lastContactAt || c.updatedAt)} · {age}d</span>
             <Btn size="sm" kind="brass" onClick={() => onPatch(c.id, { lastContactAt: nowISO() }, 'Contact logged')}>Log contact</Btn>
             <Btn size="sm" kind="ghost" onClick={() => setTab('details')}>
@@ -1360,20 +1430,42 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
         {/* linked records */}
         <div style={{ padding: '12px 18px', background: C.card, borderBottom: `1px solid ${C.line}` }}>
           <div className="flex flex-col gap-3">
-            <RelatedList title="Search" empty="Not assigned to a search. Set one under Details."
-              items={c.searchId && nav.searchById[c.searchId] ? [{
-                key: c.searchId,
-                label: nav.searchById[c.searchId].role,
-                sub: nav.searchById[c.searchId].status,
-                onClick: () => nav.goTo('search', c.searchId),
-              }] : []} />
-            <RelatedList title="Company" empty="No company, because no search is assigned."
-              items={nav.rel.clientOfSearch(c.searchId) ? [{
-                key: 'cl',
-                label: nav.rel.clientOfSearch(c.searchId).name,
-                sub: nav.rel.clientOfSearch(c.searchId).type,
-                onClick: () => nav.goTo('client', nav.rel.clientOfSearch(c.searchId).id),
-              }] : []} />
+            <div>
+              <Eyebrow color={C.mute} style={{ marginBottom: 7 }}>Searches in play</Eyebrow>
+              {searchIdsOf(c).length === 0 ? (
+                <div style={{ fontSize: 11.5, color: C.mute }}>Not on a search yet. Add one under Edit profile.</div>
+              ) : (
+                <div className="flex flex-col" style={{ gap: 3 }}>
+                  {searchIdsOf(c).map((sid) => {
+                    const sr = nav.searchById[sid];
+                    if (!sr) return null;
+                    const st = stageOf(stageFor(c, sid));
+                    return (
+                      <div key={sid} className="flex items-center gap-2"
+                        style={{ border: `1px solid ${C.lineSoft}`, background: C.card, padding: '8px 9px' }}>
+                        <button onClick={() => nav.goTo('search', sid)} className="flex-1" style={{ textAlign: 'left', cursor: 'pointer', minWidth: 0 }}>
+                          <div style={{ fontSize: 12, fontWeight: 700 }}>{sr.role}</div>
+                          <div style={{ fontSize: 10.5, color: C.mute }}>{sr.client}</div>
+                        </button>
+                        <select value={stageFor(c, sid)} onChange={(e) => onStage(c.id, e.target.value, sid)}
+                          style={{ fontSize: 10.5, padding: '3px 4px', border: `1px solid ${C.line}`, background: '#fff', color: st.color, fontWeight: 700 }}>
+                          {STAGES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                        </select>
+                        <button title="Remove from this search" onClick={() => onRemoveFromSearch(c.id, sid)}
+                          style={{ cursor: 'pointer', color: C.mute, padding: 2 }}><X size={12} /></button>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+            <RelatedList title="Companies" empty="No company, because no search is assigned."
+              items={Array.from(new Set(searchIdsOf(c).map((sid) => nav.searchById[sid]?.clientId).filter(Boolean))).map((clid) => ({
+                key: clid,
+                label: nav.clientById[clid]?.name || 'Company',
+                sub: nav.clientById[clid]?.type,
+                onClick: () => nav.goTo('client', clid),
+              }))} />
             <RelatedList title="Client contacts" empty="No contacts on this account yet."
               items={nav.rel.contactsForCandidate(c).map((ct) => ({
                 key: ct.id, label: ct.name, sub: ct.role || ct.title,
@@ -1489,10 +1581,12 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
               <Field label="LinkedIn" span={2}><TextInput value={c.linkedin || ''} onChange={(e) => onPatch(c.id, { linkedin: e.target.value })} /></Field>
               <Field label="Location"><TextInput value={c.location || ''} onChange={(e) => onPatch(c.id, { location: e.target.value })} /></Field>
               <Field label="Source"><TextInput value={c.source || ''} onChange={(e) => onPatch(c.id, { source: e.target.value })} placeholder="Referral, LinkedIn, inbound" /></Field>
-              <Field label="Search">
-                <Select value={c.searchId || ''} onChange={(e) => onPatch(c.id, { searchId: e.target.value })}>
-                  <option value="">Unassigned</option>
-                  {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+              <Field label="Add to a search" span={2}>
+                <Select value="" onChange={(e) => e.target.value && onAddToSearch([c.id], e.target.value)}>
+                  <option value="">Pick a search to add</option>
+                  {searches.filter((s) => !searchIdsOf(c).includes(s.id)).map((s) => (
+                    <option key={s.id} value={s.id}>{s.client} - {s.role}</option>
+                  ))}
                 </Select>
               </Field>
               <Field label="Owner">
@@ -1532,7 +1626,7 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
 function CandidateForm({ tags, searches, owners, onClose, onSave }) {
   const [f, setF] = useState({
     id: uid('c'), name: '', title: '', company: '', email: '', phone: '', linkedin: '', location: '',
-    functionTags: [], searchId: '', stage: 'identified', owner: owners[0] || '', source: '',
+    functionTags: [], searchIds: [], stages: {}, stage: 'identified', owner: owners[0] || '', source: '',
     compCurrent: '', compTarget: '', resumeLink: '', nextStep: '', nextStepDate: '',
     lastContactAt: nowISO(), notes: [],
   });
@@ -1551,7 +1645,7 @@ function CandidateForm({ tags, searches, owners, onClose, onSave }) {
         <Field label="LinkedIn"><TextInput value={f.linkedin} onChange={(e) => set('linkedin', e.target.value)} /></Field>
         <Field label="Resume link"><TextInput value={f.resumeLink} onChange={(e) => set('resumeLink', e.target.value)} /></Field>
         <Field label="Search">
-          <Select value={f.searchId} onChange={(e) => set('searchId', e.target.value)}>
+          <Select value={f.searchIds[0] || ''} onChange={(e) => setF((p) => ({ ...p, searchIds: e.target.value ? [e.target.value] : [], stages: e.target.value ? { [e.target.value]: p.stage } : {} }))}>
             <option value="">Unassigned</option>
             {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
           </Select>
@@ -1742,14 +1836,14 @@ function AssignCandidates({ search, candidates, searchById, onClose, onAssign, o
 
   const needle = q.trim().toLowerCase();
   const matches = useMemo(() => {
-    const pool = candidates.filter((c) => c.searchId !== search.id);
+    const pool = candidates.filter((c) => !searchIdsOf(c).includes(search.id));
     if (!needle) return pool.slice(0, 25);
     return pool
       .filter((c) => [c.name, c.title, c.company].filter(Boolean).join(' ').toLowerCase().includes(needle))
       .slice(0, 25);
   }, [candidates, needle, search.id]);
 
-  const already = candidates.filter((c) => c.searchId === search.id).length;
+  const already = candidates.filter((c) => searchIdsOf(c).includes(search.id)).length;
   const exactHit = candidates.some((c) => (c.name || '').toLowerCase() === needle);
   const toggle = (id) => setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
 
@@ -1781,7 +1875,7 @@ function AssignCandidates({ search, candidates, searchById, onClose, onAssign, o
         )}
         {matches.map((c) => {
           const on = sel.includes(c.id);
-          const other = searchById[c.searchId];
+          const other = searchIdsOf(c).map((sid) => searchById[sid]).filter(Boolean);
           return (
             <div
               key={c.id}
@@ -1796,7 +1890,9 @@ function AssignCandidates({ search, candidates, searchById, onClose, onAssign, o
                   {[c.title, c.company].filter(Boolean).join(' · ') || 'No title on file'}
                 </div>
               </div>
-              {other && <Pill color={C.brass}>On {other.role}</Pill>}
+              <div className="flex flex-wrap gap-1" style={{ justifyContent: 'flex-end' }}>
+                {other.map((o) => <Pill key={o.id} color={C.brass}>{o.role}</Pill>)}
+              </div>
             </div>
           );
         })}
@@ -2010,7 +2106,8 @@ function BulkAdd({ tags, searches, owners, onClose, onSave }) {
     onSave(parsed.map((r) => ({
       id: uid('c'), name: r.name, title: r.title || '', company: r.company || '',
       email: '', phone: '', linkedin: '', location: '', functionTags: tag ? [tag] : [],
-      searchId, stage: 'identified', owner, source: 'Bulk add', compCurrent: '', compTarget: '',
+      searchIds: searchId ? [searchId] : [], stages: searchId ? { [searchId]: 'identified' } : {},
+      stage: 'identified', owner, source: 'Bulk add', compCurrent: '', compTarget: '',
       resumeLink: '', nextStep: '', nextStepDate: '', lastContactAt: nowISO(),
       createdAt: nowISO(), updatedAt: nowISO(), notes: [],
     })));
@@ -2159,7 +2256,8 @@ function CVImport({ tags, searches, owners, onClose, onCommit }) {
         candidate: {
           id, name: p.name || j.file.name.replace(/\.[^.]+$/, ''), title: p.title || '', company: p.company || '',
           email: p.email || '', phone: p.phone || '', linkedin: p.linkedin || '', location: p.location || '',
-          functionTags: p.functionTags || [], searchId, stage, owner,
+          functionTags: p.functionTags || [], searchIds: searchId ? [searchId] : [],
+          stages: searchId ? { [searchId]: stage } : {}, stage, owner,
           source: 'CV import', seniority: p.seniority || '', yearsExperience: p.yearsExperience || '',
           compCurrent: p.compCurrent || '', compTarget: '', resumeLink: '',
           cvFileName: cvFile ? j.file.name : '', hasCvFile: !!cvFile, hasResumeText: true,
