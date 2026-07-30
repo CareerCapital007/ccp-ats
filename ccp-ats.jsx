@@ -576,11 +576,12 @@ export default function App() {
   // A search and a brand new company must be written in a single operation.
   // Two separate writes would each work from the same snapshot, and the second
   // would silently discard the first.
-  const saveSearch = (sr, newClient) => {
+  const saveSearch = (sr, newClient, newContact) => {
     const exists = data.searches.some((x) => x.id === sr.id);
     persist({
       ...data,
       clients: newClient ? [newClient, ...data.clients] : data.clients,
+      contacts: newContact ? [newContact, ...data.contacts] : data.contacts,
       searches: exists ? data.searches.map((x) => (x.id === sr.id ? sr : x)) : [sr, ...data.searches],
     });
   };
@@ -831,8 +832,8 @@ export default function App() {
         />
       )}
       {modal?.type === 'search' && (
-        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners}
-          onClose={() => setModal(null)} onSave={(sr, newClient) => { saveSearch(sr, newClient); setModal(null); }} />
+        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners} contacts={data.contacts}
+          onClose={() => setModal(null)} onSave={(sr, newClient, newContact) => { saveSearch(sr, newClient, newContact); setModal(null); }} />
       )}
       {modal?.type === 'client' && (
         <ClientForm record={modal.payload} nav={nav} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
@@ -1233,15 +1234,39 @@ function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump, 
                 <Meta k="Fee" v={s.fee} />
               </div>
               {s.notes && <div style={{ fontSize: 11.5, color: C.mute, marginTop: 10, lineHeight: 1.55 }}>{s.notes}</div>}
-              {s.clientId && (
-                <div style={{ marginTop: 12 }}>
-                  <RelatedList title="Contacts on this account" empty="No contacts logged for this company yet."
-                    items={nav.rel.contactsOfClient(s.clientId).map((ct) => ({
-                      key: ct.id, label: ct.name, sub: ct.role || ct.title,
-                      onClick: () => nav.goTo('contact', ct.id),
-                    }))} />
-                </div>
-              )}
+              {s.clientId && (() => {
+                const all = nav.rel.contactsOfClient(s.clientId);
+                const picked = (s.contactIds || []).length
+                  ? all.filter((ct) => s.contactIds.includes(ct.id))
+                  : all;
+                return (
+                  <div style={{ marginTop: 12 }}>
+                    <Eyebrow color={C.mute} style={{ marginBottom: 7 }}>
+                      {(s.contactIds || []).length ? 'Point of contact' : 'Contacts on this account'}
+                    </Eyebrow>
+                    {picked.length === 0 ? (
+                      <div style={{ fontSize: 11.5, color: C.mute }}>None yet. Edit the search to add one.</div>
+                    ) : (
+                      <div className="flex flex-col" style={{ gap: 3 }}>
+                        {picked.map((ct) => (
+                          <button key={ct.id} onClick={() => nav.goTo('contact', ct.id)}
+                            style={{ textAlign: 'left', border: `1px solid ${C.lineSoft}`, background: C.card, padding: '8px 10px', cursor: 'pointer', width: '100%' }}>
+                            <div className="flex items-center justify-between gap-2">
+                              <span style={{ fontSize: 12.5, fontWeight: 600 }}>{ct.name}</span>
+                              {ct.role && <Pill color={C.brass}>{ct.role}</Pill>}
+                            </div>
+                            {ct.title && <div style={{ fontSize: 11, color: C.mute, marginTop: 1 }}>{ct.title}</div>}
+                            <div className="flex flex-wrap gap-3" style={{ marginTop: 4 }}>
+                              {ct.email && <span className="flex items-center gap-1" style={{ fontSize: 11, color: C.green }}><Mail size={10} /> {ct.email}</span>}
+                              {ct.phone && <span className="flex items-center gap-1" style={{ fontSize: 11, color: C.mute }}><Phone size={10} /> {ct.phone}</span>}
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
               <div className="flex items-center justify-between" style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.lineSoft}` }}>
                 <span style={{ fontSize: 11.5 }}>
                   <strong style={{ fontFamily: SERIF, fontSize: 15, color: C.brass }}>{mine.length}</strong>
@@ -1708,10 +1733,11 @@ function CandidateForm({ tags, searches, owners, onClose, onSave }) {
   );
 }
 
-function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
+function SearchForm({ record, tags, clients, owners, contacts, onClose, onSave }) {
   const [f, setF] = useState(
-    record || { id: uid('s'), client: '', clientId: '', role: '', functionTags: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
+    record || { id: uid('s'), client: '', clientId: '', role: '', functionTags: [], contactIds: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
   );
+  const [nc, setNc] = useState({ name: '', title: '', email: '', phone: '' });
   const [newCo, setNewCo] = useState('');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
 
@@ -1731,9 +1757,25 @@ function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
     } else if (out.clientId) {
       out = { ...out, client: clients.find((c) => c.id === out.clientId)?.name || out.client };
     }
-    onSave(out, created);
+
+    let newContact = null;
+    if (nc.name.trim()) {
+      newContact = {
+        id: uid('ct'), name: nc.name.trim(), title: nc.title.trim(), clientId: out.clientId,
+        email: nc.email.trim(), phone: nc.phone.trim(), mobile: '', linkedin: '', location: '',
+        role: 'Decision Maker', status: 'Active', owner: out.owner || '', source: `Added on ${out.role}`,
+        nextStep: '', nextStepDate: '', lastContactAt: nowISO(), notes: [],
+      };
+      out = { ...out, contactIds: [...(out.contactIds || []), newContact.id] };
+    }
+    onSave(out, created, newContact);
   };
   const canSave = (!!f.clientId || !!newCo.trim()) && !!f.role.trim();
+  const coContacts = (contacts || []).filter((ct) => ct.clientId && ct.clientId === f.clientId);
+  const toggleContact = (id) => setF((p) => {
+    const cur = p.contactIds || [];
+    return { ...p, contactIds: cur.includes(id) ? cur.filter((x) => x !== id) : [...cur, id] };
+  });
   const toggle = (t) => set('functionTags', (f.functionTags || []).includes(t) ? f.functionTags.filter((x) => x !== t) : [...(f.functionTags || []), t]);
 
   return (
@@ -1776,6 +1818,49 @@ function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
           {tags.map((t) => <Pill key={t} color={tagColor(tags, t)} filled={(f.functionTags || []).includes(t)} onClick={() => toggle(t)}>{t}</Pill>)}
         </div>
       </div>
+
+      <div style={{ marginTop: 18, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+        <Eyebrow style={{ marginBottom: 9 }}>Client contacts on this search</Eyebrow>
+
+        {coContacts.length > 0 && (
+          <div style={{ border: `1px solid ${C.lineSoft}`, marginBottom: 12, maxHeight: 170, overflowY: 'auto' }}>
+            {coContacts.map((ct) => {
+              const on = (f.contactIds || []).includes(ct.id);
+              return (
+                <div key={ct.id} onClick={() => toggleContact(ct.id)} className="flex items-center gap-3"
+                  style={{ padding: '8px 11px', borderBottom: `1px solid ${C.lineSoft}`, cursor: 'pointer', background: on ? C.brassSoft : C.card }}>
+                  <input type="checkbox" checked={on} readOnly />
+                  <div className="flex-1" style={{ minWidth: 0 }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{ct.name}</div>
+                    <div style={{ fontSize: 11, color: C.mute }}>
+                      {[ct.title, ct.email, ct.phone].filter(Boolean).join(' · ') || 'No details on file'}
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
+
+        {f.clientId && coContacts.length === 0 && (
+          <div style={{ fontSize: 11.5, color: C.mute, marginBottom: 12, lineHeight: 1.55 }}>
+            No contacts on this company yet. Add one below and it appears on the Contacts page too.
+          </div>
+        )}
+
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(170px, 1fr))' }}>
+          <Field label="New contact name"><TextInput value={nc.name} onChange={(e) => setNc((p) => ({ ...p, name: e.target.value }))} /></Field>
+          <Field label="Title"><TextInput value={nc.title} onChange={(e) => setNc((p) => ({ ...p, title: e.target.value }))} /></Field>
+          <Field label="Email"><TextInput value={nc.email} onChange={(e) => setNc((p) => ({ ...p, email: e.target.value }))} /></Field>
+          <Field label="Phone"><TextInput value={nc.phone} onChange={(e) => setNc((p) => ({ ...p, phone: e.target.value }))} /></Field>
+        </div>
+        {nc.name.trim() && (
+          <div style={{ fontSize: 11, color: C.mute, marginTop: 7, lineHeight: 1.5 }}>
+            Saving adds {nc.name.trim()} to this search and to Contacts, filed under the company.
+          </div>
+        )}
+      </div>
+
       <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
         <Btn onClick={save} disabled={!canSave}>Save search</Btn>
