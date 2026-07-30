@@ -25,6 +25,7 @@ export default async (req) => {
 
   const payload = JSON.parse(await req.text());
   payload.model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-5';
+  payload.max_tokens = 4000;
 
   const upstream = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
