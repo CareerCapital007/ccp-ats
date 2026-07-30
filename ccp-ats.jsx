@@ -417,6 +417,17 @@ export default function App() {
     patchCandidate(id, { stage, lastContactAt: nowISO() }, `Stage moved to ${stageOf(stage).label}`);
   };
 
+  const bulkPatch = (ids, patch, label) => {
+    const set = new Set(ids);
+    const next = data.candidates.map((c) => {
+      if (!set.has(c.id)) return c;
+      const updated = { ...c, ...patch, updatedAt: nowISO() };
+      if (label) updated.notes = [...(c.notes || []), { id: uid('n'), ts: nowISO(), kind: 'system', body: label }];
+      return updated;
+    });
+    persist({ ...data, candidates: next });
+  };
+
   const commitImports = async (items) => {
     await persist({ ...data, candidates: [...items.map((i) => i.candidate), ...data.candidates] });
     for (const i of items) {
@@ -643,7 +654,8 @@ export default function App() {
         {view === 'candidates' && (
           <CandidatesTable rows={filtered} tags={tags} searchById={searchById} onOpen={setOpen} onStage={setStage} onTouch={logTouch}
             onAdd={() => setModal({ type: 'candidate' })} onBulk={() => setModal({ type: 'bulk' })}
-            onCV={() => setModal({ type: 'cv' })} />
+            onCV={() => setModal({ type: 'cv' })}
+            searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch} />
         )}
         {view === 'searches' && (
           <SearchesView searches={data.searches} candidates={data.candidates} tags={tags}
@@ -902,8 +914,21 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd }) {
 /* ============================================================
    VIEW: CANDIDATE TABLE
    ============================================================ */
-function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV }) {
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch }) {
   const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
+  const [sel, setSel] = useState([]);
+
+  const selSet = useMemo(() => new Set(sel), [sel]);
+  const visibleIds = useMemo(() => rows.map((r) => r.id), [rows]);
+  const allShown = sel.length > 0 && visibleIds.every((id) => selSet.has(id));
+
+  const toggleOne = (id) => setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+  const toggleAll = () => setSel(allShown ? [] : visibleIds);
+
+  const apply = (patch, label) => {
+    onBulkPatch(sel, patch, label);
+    setSel([]);
+  };
   const sorted = useMemo(() => {
     const v = (c) => {
       if (sort.key === 'age') return daysSince(c.lastContactAt || c.updatedAt) ?? 0;
@@ -941,10 +966,38 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
         <Btn kind="ghost" size="sm" onClick={onCV}><UploadCloud size={12} /> Import CVs</Btn>
         <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add candidate</Btn>
       </div>
+      {sel.length > 0 && (
+        <div className="flex flex-wrap items-center gap-2" style={{ background: C.greenSoft, border: `1px solid ${C.green}33`, padding: '9px 12px', marginBottom: 10 }}>
+          <span style={{ fontFamily: SERIF, fontSize: 15, color: C.green, minWidth: 78 }}>{sel.length} selected</span>
+
+          <Select value="" onChange={(e) => e.target.value && apply({ searchId: e.target.value }, `Assigned to ${searchById[e.target.value]?.client || 'a search'}`)} style={{ width: 'auto', minWidth: 165 }}>
+            <option value="">Assign to search</option>
+            {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+          </Select>
+
+          <Select value="" onChange={(e) => e.target.value && apply({ stage: e.target.value, lastContactAt: nowISO() }, `Stage moved to ${stageOf(e.target.value).label}`)} style={{ width: 'auto', minWidth: 145 }}>
+            <option value="">Set stage</option>
+            {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </Select>
+
+          <Select value="" onChange={(e) => e.target.value && apply({ owner: e.target.value }, `Owner set to ${e.target.value}`)} style={{ width: 'auto', minWidth: 130 }}>
+            <option value="">Set owner</option>
+            {owners.map((o) => <option key={o}>{o}</option>)}
+          </Select>
+
+          <Btn size="sm" kind="ghost" onClick={() => apply({ lastContactAt: nowISO() }, 'Contact logged')}>Log contact</Btn>
+          <Btn size="sm" kind="ghost" onClick={() => setSel([])}>Clear</Btn>
+          <span style={{ fontSize: 11, color: C.mute, marginLeft: 'auto' }}>Delete one at a time from the candidate panel</span>
+        </div>
+      )}
+
       <div style={{ background: C.card, border: `1px solid ${C.line}`, overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 940 }}>
           <thead style={{ background: C.greenSoft, borderBottom: `1px solid ${C.line}` }}>
             <tr>
+              <th style={{ width: 34, padding: '9px 0 9px 10px' }}>
+                <input type="checkbox" checked={allShown} onChange={toggleAll} title="Select all shown" />
+              </th>
               <H k="name">Candidate</H>
               <H k="company">Company</H>
               <H k="functionTags">Function</H>
@@ -960,7 +1013,10 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
               const age = daysSince(c.lastContactAt || c.updatedAt) ?? 0;
               const s = searchById[c.searchId];
               return (
-                <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}`, background: selSet.has(c.id) ? C.brassSoft : 'transparent' }}>
+                  <td style={{ padding: '9px 0 9px 10px' }}>
+                    <input type="checkbox" checked={selSet.has(c.id)} onChange={() => toggleOne(c.id)} />
+                  </td>
                   <td style={{ padding: '9px 10px', cursor: 'pointer' }} onClick={() => onOpen(c.id)}>
                     <div style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</div>
                     <div style={{ fontSize: 11, color: C.mute }}>{c.title}</div>
