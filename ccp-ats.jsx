@@ -62,6 +62,7 @@ const SEED = {
   candidates: [],
   searches: [],
   clients: [],
+  contacts: [],
   meta: { tags: DEFAULT_TAGS, owners: ['Recruiter', 'Joe Carbone'] },
 };
 
@@ -358,12 +359,32 @@ export default function App() {
         const r = await window.storage.get(CORE_KEY, true);
         const parsed = r && r.value ? JSON.parse(r.value) : null;
         if (parsed) {
-          setData({
+          const next = {
             candidates: parsed.candidates || [],
             searches: parsed.searches || [],
             clients: parsed.clients || [],
+            contacts: parsed.contacts || [],
             meta: { tags: parsed.meta?.tags?.length ? parsed.meta.tags : DEFAULT_TAGS, owners: parsed.meta?.owners || SEED.meta.owners },
+          };
+          // Older searches stored the client as loose text. Bind each one to a real
+          // company record so every entity can be reached from every other.
+          let changed = false;
+          const clients = [...next.clients];
+          next.searches = next.searches.map((sr) => {
+            if (sr.clientId) return sr;
+            const name = (sr.client || '').trim();
+            if (!name) return sr;
+            let match = clients.find((c) => (c.name || '').toLowerCase() === name.toLowerCase());
+            if (!match) {
+              match = { id: uid('cl'), name, type: 'Direct', contactName: '', contactTitle: '', email: '', phone: '', status: 'Active', notes: '' };
+              clients.push(match);
+            }
+            changed = true;
+            return { ...sr, clientId: match.id };
           });
+          next.clients = clients;
+          setData(next);
+          if (changed) { try { await window.storage.set(CORE_KEY, JSON.stringify(next), true); } catch (e) { /* retry on next edit */ } }
         }
       } catch (e) {
         // no record yet, start clean
@@ -449,6 +470,15 @@ export default function App() {
       searches: exists ? data.searches.map((x) => (x.id === s.id ? s : x)) : [s, ...data.searches],
     });
   };
+  const upsertContact = (ct) => {
+    const exists = data.contacts.some((x) => x.id === ct.id);
+    persist({
+      ...data,
+      contacts: exists ? data.contacts.map((x) => (x.id === ct.id ? ct : x)) : [ct, ...data.contacts],
+    });
+  };
+  const removeContact = (id) => persist({ ...data, contacts: data.contacts.filter((c) => c.id !== id) });
+
   const upsertClient = (cl) => {
     const exists = data.clients.some((x) => x.id === cl.id);
     persist({
@@ -460,6 +490,33 @@ export default function App() {
   /* ---- derived ---- */
   const tags = data.meta.tags;
   const searchById = useMemo(() => Object.fromEntries(data.searches.map((s) => [s.id, s])), [data.searches]);
+  const clientById = useMemo(() => Object.fromEntries(data.clients.map((c) => [c.id, c])), [data.clients]);
+
+  const goTo = (type, id) => {
+    setModal(null);
+    setOpen(null);
+    if (type === 'candidate') { setView('candidates'); setOpen(id); }
+    else if (type === 'search') { setFSearch(id); setQ(''); setFTag(''); setFOwner(''); setView('pipeline'); }
+    else if (type === 'client') { setView('clients'); setModal({ type: 'client', payload: data.clients.find((c) => c.id === id) }); }
+    else if (type === 'contact') { setView('contacts'); setModal({ type: 'contact', payload: data.contacts.find((c) => c.id === id) }); }
+  };
+
+  const rel = useMemo(() => ({
+    searchesOfClient: (id) => data.searches.filter((s) => s.clientId === id),
+    contactsOfClient: (id) => data.contacts.filter((c) => c.clientId === id),
+    candidatesOfSearch: (id) => data.candidates.filter((c) => c.searchId === id),
+    candidatesOfClient: (id) => {
+      const ids = new Set(data.searches.filter((s) => s.clientId === id).map((s) => s.id));
+      return data.candidates.filter((c) => ids.has(c.searchId));
+    },
+    clientOfSearch: (sid) => clientById[searchById[sid]?.clientId],
+    contactsForCandidate: (cand) => {
+      const cid = searchById[cand.searchId]?.clientId;
+      return cid ? data.contacts.filter((c) => c.clientId === cid) : [];
+    },
+  }), [data, clientById, searchById]);
+
+  const nav = { goTo, rel, clientById, searchById };
 
   const filtered = useMemo(() => {
     const needle = q.trim().toLowerCase();
@@ -538,6 +595,7 @@ export default function App() {
     { id: 'pipeline', label: 'Pipeline', icon: ArrowRight },
     { id: 'candidates', label: 'Candidates', icon: Users },
     { id: 'searches', label: 'Searches', icon: Briefcase },
+    { id: 'contacts', label: 'Contacts', icon: Mail },
     { id: 'clients', label: 'Clients', icon: Building2 },
   ];
 
@@ -655,15 +713,21 @@ export default function App() {
           <CandidatesTable rows={filtered} tags={tags} searchById={searchById} onOpen={setOpen} onStage={setStage} onTouch={logTouch}
             onAdd={() => setModal({ type: 'candidate' })} onBulk={() => setModal({ type: 'bulk' })}
             onCV={() => setModal({ type: 'cv' })}
-            searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch} />
+            searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch}
+            onDelete={removeCandidate} />
         )}
         {view === 'searches' && (
-          <SearchesView searches={data.searches} candidates={data.candidates} tags={tags}
+          <SearchesView searches={data.searches} candidates={data.candidates} tags={tags} nav={nav}
             onAdd={() => setModal({ type: 'search' })} onEdit={(s) => setModal({ type: 'search', payload: s })}
             onJump={(id) => { setFSearch(id); setView('pipeline'); }} />
         )}
+        {view === 'contacts' && (
+          <ContactsView contacts={data.contacts} clients={data.clients} nav={nav}
+            onAdd={() => setModal({ type: 'contact' })} onEdit={(c) => setModal({ type: 'contact', payload: c })} />
+        )}
         {view === 'clients' && (
-          <ClientsView clients={data.clients} onAdd={() => setModal({ type: 'client' })} onEdit={(c) => setModal({ type: 'client', payload: c })} />
+          <ClientsView clients={data.clients} nav={nav}
+            onAdd={() => setModal({ type: 'client' })} onEdit={(c) => setModal({ type: 'client', payload: c })} />
         )}
       </div>
 
@@ -680,11 +744,17 @@ export default function App() {
         />
       )}
       {modal?.type === 'search' && (
-        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners}
+        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners} onCreateClient={upsertClient}
           onClose={() => setModal(null)} onSave={(s) => { upsertSearch(s); setModal(null); }} />
       )}
       {modal?.type === 'client' && (
-        <ClientForm record={modal.payload} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
+        <ClientForm record={modal.payload} nav={nav} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
+      )}
+      {modal?.type === 'contact' && (
+        <ContactForm record={modal.payload} clients={data.clients} owners={data.meta.owners} nav={nav}
+          onClose={() => setModal(null)}
+          onSave={(c) => { upsertContact(c); setModal(null); }}
+          onDelete={(id) => { removeContact(id); setModal(null); }} />
       )}
       {modal?.type === 'bulk' && (
         <BulkAdd tags={tags} searches={data.searches} owners={data.meta.owners}
@@ -703,7 +773,7 @@ export default function App() {
       {open && (
         <CandidateDrawer
           candidate={data.candidates.find((c) => c.id === open)}
-          tags={tags} searches={data.searches} owners={data.meta.owners}
+          tags={tags} searches={data.searches} owners={data.meta.owners} nav={nav}
           onClose={() => setOpen(null)}
           onPatch={patchCandidate}
           onStage={setStage}
@@ -858,6 +928,27 @@ function Row({ children, onClick }) {
     </div>
   );
 }
+function RelatedList({ title, items, empty }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9.5, letterSpacing: 0.9, textTransform: 'uppercase', color: C.mute, fontWeight: 800, marginBottom: 6 }}>{title}</div>
+      {items.length === 0 ? (
+        <div style={{ fontSize: 11.5, color: C.mute }}>{empty}</div>
+      ) : (
+        <div className="flex flex-col" style={{ gap: 3 }}>
+          {items.map((it) => (
+            <button key={it.key} onClick={it.onClick} className="flex items-center justify-between gap-2"
+              style={{ textAlign: 'left', padding: '7px 9px', border: `1px solid ${C.lineSoft}`, background: C.card, cursor: 'pointer', width: '100%' }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.ink, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{it.label}</span>
+              <span className="flex items-center gap-1" style={{ fontSize: 10.5, color: C.mute, flexShrink: 0 }}>{it.sub}<ArrowRight size={11} /></span>
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Quiet({ children }) {
   return <div style={{ fontSize: 12, color: C.mute, padding: '14px 0', lineHeight: 1.6 }}>{children}</div>;
 }
@@ -914,9 +1005,10 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd }) {
 /* ============================================================
    VIEW: CANDIDATE TABLE
    ============================================================ */
-function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch }) {
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete }) {
   const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
   const [sel, setSel] = useState([]);
+  const [confirmId, setConfirmId] = useState(null);
 
   const selSet = useMemo(() => new Set(sel), [sel]);
   const visibleIds = useMemo(() => rows.map((r) => r.id), [rows]);
@@ -1005,7 +1097,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
               <H k="stage" w={150}>Stage</H>
               <H k="owner">Owner</H>
               <H k="age" w={70}>Aging</H>
-              <th style={{ width: 70 }} />
+              <th style={{ width: 130 }} />
             </tr>
           </thead>
           <tbody>
@@ -1037,7 +1129,21 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
                   <td style={{ padding: '9px 10px', fontSize: 11.5 }}>{c.owner || '-'}</td>
                   <td style={{ padding: '9px 10px', fontFamily: SERIF, fontSize: 14, color: age >= 21 ? C.red : age >= 7 ? C.brass : C.mute }}>{age}d</td>
                   <td style={{ padding: '9px 10px' }}>
-                    <Btn size="sm" kind="ghost" onClick={() => onTouch(c.id)}>Touch</Btn>
+                    {confirmId === c.id ? (
+                      <div className="flex items-center gap-1.5">
+                        <span style={{ fontSize: 10.5, color: C.red }}>Delete?</span>
+                        <Btn size="sm" kind="danger" onClick={() => { onDelete(c.id); setConfirmId(null); }}>Yes</Btn>
+                        <Btn size="sm" kind="ghost" onClick={() => setConfirmId(null)}>No</Btn>
+                      </div>
+                    ) : (
+                      <div className="flex items-center gap-1.5">
+                        <Btn size="sm" kind="ghost" onClick={() => onTouch(c.id)}>Touch</Btn>
+                        <button title="Delete candidate" onClick={() => setConfirmId(c.id)}
+                          style={{ cursor: 'pointer', color: C.mute, padding: 4 }}>
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    )}
                   </td>
                 </tr>
               );
@@ -1052,7 +1158,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
 /* ============================================================
    VIEW: SEARCHES
    ============================================================ */
-function SearchesView({ searches, candidates, tags, onAdd, onEdit, onJump }) {
+function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump }) {
   if (!searches.length) {
     return <Empty icon={Briefcase} title="No searches yet" hint="A search is one client mandate: company, role, function, owner, and target close date. Candidates get logged against it."
       action={<Btn onClick={onAdd}><Plus size={13} /> Add a search</Btn>} />;
@@ -1069,9 +1175,12 @@ function SearchesView({ searches, candidates, tags, onAdd, onEdit, onJump }) {
           return (
             <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `3px solid ${statusColor}`, padding: 14 }}>
               <div className="flex items-start justify-between gap-2">
-                <div>
+                <div style={{ minWidth: 0 }}>
                   <div style={{ fontFamily: SERIF, fontSize: 16, color: C.green, lineHeight: 1.2 }}>{s.role}</div>
-                  <div style={{ fontSize: 12, color: C.mute, marginTop: 2 }}>{s.client}</div>
+                  <button onClick={() => s.clientId && nav.goTo('client', s.clientId)}
+                    style={{ fontSize: 12, color: s.clientId ? C.brass : C.mute, marginTop: 2, cursor: s.clientId ? 'pointer' : 'default', fontWeight: 600, textAlign: 'left' }}>
+                    {nav.clientById[s.clientId]?.name || s.client}
+                  </button>
                 </div>
                 <Pill color={statusColor} filled>{s.status}</Pill>
               </div>
@@ -1085,6 +1194,15 @@ function SearchesView({ searches, candidates, tags, onAdd, onEdit, onJump }) {
                 <Meta k="Fee" v={s.fee} />
               </div>
               {s.notes && <div style={{ fontSize: 11.5, color: C.mute, marginTop: 10, lineHeight: 1.55 }}>{s.notes}</div>}
+              {s.clientId && (
+                <div style={{ marginTop: 12 }}>
+                  <RelatedList title="Contacts on this account" empty="No contacts logged for this company yet."
+                    items={nav.rel.contactsOfClient(s.clientId).map((ct) => ({
+                      key: ct.id, label: ct.name, sub: ct.role || ct.title,
+                      onClick: () => nav.goTo('contact', ct.id),
+                    }))} />
+                </div>
+              )}
               <div className="flex items-center justify-between" style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.lineSoft}` }}>
                 <span style={{ fontSize: 11.5 }}>
                   <strong style={{ fontFamily: SERIF, fontSize: 15, color: C.brass }}>{mine.length}</strong>
@@ -1114,49 +1232,65 @@ function Meta({ k, v }) {
 /* ============================================================
    VIEW: CLIENTS
    ============================================================ */
-function ClientsView({ clients, onAdd, onEdit }) {
+function ClientsView({ clients, nav, onAdd, onEdit }) {
   if (!clients.length) {
-    return <Empty icon={Building2} title="No clients yet" hint="Track sponsors, portfolio companies, and direct clients here, with the contact you actually deal with."
-      action={<Btn onClick={onAdd}><Plus size={13} /> Add a client</Btn>} />;
+    return <Empty icon={Building2} title="No companies yet"
+      hint="Sponsors, portfolio companies, and direct clients live here. Every search and every contact hangs off a company record."
+      action={<Btn onClick={onAdd}><Plus size={13} /> Add a company</Btn>} />;
   }
   return (
     <div>
       <div className="flex justify-end" style={{ marginBottom: 10 }}>
-        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add client</Btn>
+        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add company</Btn>
       </div>
-      <div style={{ background: C.card, border: `1px solid ${C.line}`, overflowX: 'auto' }}>
-        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
-          <thead style={{ background: C.greenSoft, borderBottom: `1px solid ${C.line}` }}>
-            <tr>
-              {['Client', 'Type', 'Contact', 'Email', 'Status', ''].map((h, i) => (
-                <th key={i} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 800 }}>{h}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {clients.map((c) => (
-              <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
-                <td style={{ padding: '9px 10px', fontSize: 13, fontWeight: 700 }}>{c.name}</td>
-                <td style={{ padding: '9px 10px', fontSize: 12, color: C.mute }}>{c.type}</td>
-                <td style={{ padding: '9px 10px', fontSize: 12 }}>{c.contactName}<div style={{ fontSize: 11, color: C.mute }}>{c.contactTitle}</div></td>
-                <td style={{ padding: '9px 10px', fontSize: 12 }}>{c.email || '-'}</td>
-                <td style={{ padding: '9px 10px' }}>
-                  <Pill color={c.status === 'Active' ? C.green : c.status === 'Prospect' ? C.brass : C.mute}>{c.status}</Pill>
-                </td>
-                <td style={{ padding: '9px 10px' }}><Btn size="sm" kind="ghost" onClick={() => onEdit(c)}>Edit</Btn></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))' }}>
+        {clients.map((cl) => {
+          const srch = nav.rel.searchesOfClient(cl.id);
+          const cts = nav.rel.contactsOfClient(cl.id);
+          const cands = nav.rel.candidatesOfClient(cl.id);
+          const statusColor = cl.status === 'Active' ? C.green : cl.status === 'Prospect' ? C.brass : C.mute;
+          return (
+            <div key={cl.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `3px solid ${statusColor}`, padding: 14 }}>
+              <div className="flex items-start justify-between gap-2">
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: SERIF, fontSize: 16, color: C.green, lineHeight: 1.2 }}>{cl.name}</div>
+                  <div style={{ fontSize: 11.5, color: C.mute, marginTop: 2 }}>{cl.type}</div>
+                </div>
+                <Pill color={statusColor} filled>{cl.status}</Pill>
+              </div>
+
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr 1fr', gap: 6, marginTop: 12 }}>
+                {[{ n: srch.length, l: 'Searches' }, { n: cts.length, l: 'Contacts' }, { n: cands.length, l: 'Candidates' }].map((x) => (
+                  <div key={x.l} style={{ background: C.greenSoft, padding: '7px 8px' }}>
+                    <div style={{ fontFamily: SERIF, fontSize: 19, color: C.green, lineHeight: 1 }}>{x.n}</div>
+                    <div style={{ fontSize: 9, letterSpacing: 0.6, textTransform: 'uppercase', color: C.mute, fontWeight: 700, marginTop: 3 }}>{x.l}</div>
+                  </div>
+                ))}
+              </div>
+
+              <div className="flex flex-col gap-3" style={{ marginTop: 12 }}>
+                <RelatedList title="Searches" empty="No searches on this account."
+                  items={srch.map((sr) => ({ key: sr.id, label: sr.role, sub: sr.status, onClick: () => nav.goTo('search', sr.id) }))} />
+                <RelatedList title="Contacts" empty="No contacts yet."
+                  items={cts.map((ct) => ({ key: ct.id, label: ct.name, sub: ct.role || ct.title, onClick: () => nav.goTo('contact', ct.id) }))} />
+              </div>
+
+              <div className="flex justify-end" style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.lineSoft}` }}>
+                <Btn size="sm" kind="ghost" onClick={() => onEdit(cl)}>Edit company</Btn>
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
 }
 
+
 /* ============================================================
    CANDIDATE DRAWER
    ============================================================ */
-function CandidateDrawer({ candidate, tags, searches, owners, onClose, onPatch, onStage, onDelete }) {
+function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPatch, onStage, onDelete }) {
   const [note, setNote] = useState('');
   const [resume, setResume] = useState('');
   const [resumeLoaded, setResumeLoaded] = useState(false);
@@ -1283,6 +1417,31 @@ function CandidateDrawer({ candidate, tags, searches, owners, onClose, onPatch, 
           {c.phone && <span className="flex items-center gap-1" style={{ color: C.mute }}><Phone size={12} /> {c.phone}</span>}
           {c.linkedin && <a href={c.linkedin} target="_blank" rel="noreferrer" className="flex items-center gap-1" style={{ color: C.green }}><Linkedin size={12} /> LinkedIn</a>}
           {!c.email && !c.phone && !c.linkedin && <span style={{ color: C.mute }}>No contact details yet. Add them under Details.</span>}
+        </div>
+
+        {/* linked records */}
+        <div style={{ padding: '12px 18px', background: C.card, borderBottom: `1px solid ${C.line}` }}>
+          <div className="flex flex-col gap-3">
+            <RelatedList title="Search" empty="Not assigned to a search. Set one under Details."
+              items={c.searchId && nav.searchById[c.searchId] ? [{
+                key: c.searchId,
+                label: nav.searchById[c.searchId].role,
+                sub: nav.searchById[c.searchId].status,
+                onClick: () => nav.goTo('search', c.searchId),
+              }] : []} />
+            <RelatedList title="Company" empty="No company, because no search is assigned."
+              items={nav.rel.clientOfSearch(c.searchId) ? [{
+                key: 'cl',
+                label: nav.rel.clientOfSearch(c.searchId).name,
+                sub: nav.rel.clientOfSearch(c.searchId).type,
+                onClick: () => nav.goTo('client', nav.rel.clientOfSearch(c.searchId).id),
+              }] : []} />
+            <RelatedList title="Client contacts" empty="No contacts on this account yet."
+              items={nav.rel.contactsForCandidate(c).map((ct) => ({
+                key: ct.id, label: ct.name, sub: ct.role || ct.title,
+                onClick: () => nav.goTo('contact', ct.id),
+              }))} />
+          </div>
         </div>
 
         {/* tags */}
@@ -1483,20 +1642,41 @@ function CandidateForm({ tags, searches, owners, onClose, onSave }) {
   );
 }
 
-function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
+function SearchForm({ record, tags, clients, owners, onCreateClient, onClose, onSave }) {
   const [f, setF] = useState(
-    record || { id: uid('s'), client: '', role: '', functionTags: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
+    record || { id: uid('s'), client: '', clientId: '', role: '', functionTags: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
   );
+  const [newCo, setNewCo] = useState('');
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const save = () => {
+    let out = { ...f };
+    if (!out.clientId && newCo.trim()) {
+      const created = { id: uid('cl'), name: newCo.trim(), type: 'Direct', contactName: '', contactTitle: '', email: '', phone: '', status: 'Active', notes: '' };
+      onCreateClient(created);
+      out = { ...out, clientId: created.id, client: created.name };
+    } else if (out.clientId) {
+      out = { ...out, client: clients.find((c) => c.id === out.clientId)?.name || out.client };
+    }
+    onSave(out);
+  };
+  const canSave = (!!f.clientId || !!newCo.trim()) && !!f.role.trim();
   const toggle = (t) => set('functionTags', (f.functionTags || []).includes(t) ? f.functionTags.filter((x) => x !== t) : [...(f.functionTags || []), t]);
 
   return (
     <Modal title={record ? 'Edit search' : 'Add search'} onClose={onClose}>
       <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
-        <Field label="Client" span={2}>
-          <TextInput value={f.client} onChange={(e) => set('client', e.target.value)} list="ccp-clients" placeholder="Required" />
-          <datalist id="ccp-clients">{clients.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+        <Field label="Company" span={2}>
+          <Select value={f.clientId} onChange={(e) => { set('clientId', e.target.value); if (e.target.value) setNewCo(''); }}>
+            <option value="">Select a company</option>
+            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
         </Field>
+        {!f.clientId && (
+          <Field label="Or create a new company" span={2}>
+            <TextInput value={newCo} onChange={(e) => setNewCo(e.target.value)} placeholder="Company name" />
+          </Field>
+        )}
         <Field label="Role" span={2}><TextInput value={f.role} onChange={(e) => set('role', e.target.value)} placeholder="Chief Revenue Officer" /></Field>
         <Field label="Status">
           <Select value={f.status} onChange={(e) => set('status', e.target.value)}>
@@ -1522,13 +1702,221 @@ function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
       </div>
       <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn onClick={() => onSave(f)} disabled={!f.client.trim() || !f.role.trim()}>Save search</Btn>
+        <Btn onClick={save} disabled={!canSave}>Save search</Btn>
       </div>
     </Modal>
   );
 }
 
-function ClientForm({ record, onClose, onSave }) {
+/* ============================================================
+   VIEW: CONTACTS
+   ============================================================ */
+const CONTACT_ROLES = ['Decision Maker', 'Economic Buyer', 'Champion', 'Influencer', 'Gatekeeper', 'Referral Source'];
+const CONTACT_STATUS = ['Prospect', 'Active', 'Warm', 'Dormant'];
+
+function ContactsView({ contacts, clients, onAdd, onEdit }) {
+  const [q, setQ] = useState('');
+  const [fClient, setFClient] = useState('');
+  const clientById = useMemo(() => Object.fromEntries(clients.map((c) => [c.id, c])), [clients]);
+
+  const rows = useMemo(() => {
+    const n = q.trim().toLowerCase();
+    return contacts.filter((c) => {
+      if (fClient && c.clientId !== fClient) return false;
+      if (!n) return true;
+      return [c.name, c.title, c.email, c.phone, c.location, clientById[c.clientId]?.name]
+        .filter(Boolean).join(' ').toLowerCase().includes(n);
+    });
+  }, [contacts, q, fClient, clientById]);
+
+  if (!contacts.length) {
+    return <Empty icon={Mail} title="No contacts yet"
+      hint="Everyone you deal with on the client side lives here: sponsors, operating partners, CHROs, board members. Each one carries their own notes and follow-up date."
+      action={<Btn onClick={onAdd}><Plus size={13} /> Add a contact</Btn>} />;
+  }
+
+  return (
+    <div>
+      <div className="flex flex-wrap items-center gap-2" style={{ marginBottom: 10 }}>
+        <div className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, padding: '5px 8px', background: '#fff', minWidth: 190, flex: '1 1 190px', maxWidth: 300 }}>
+          <SearchIcon size={13} style={{ color: C.mute }} />
+          <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Search contacts"
+            style={{ border: 'none', outline: 'none', fontSize: 12.5, width: '100%', fontFamily: SANS }} />
+        </div>
+        <Select value={fClient} onChange={(e) => setFClient(e.target.value)} style={{ width: 'auto', minWidth: 160 }}>
+          <option value="">All companies</option>
+          {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+        </Select>
+        <span style={{ fontSize: 11.5, color: C.mute, marginLeft: 'auto' }}>{rows.length} shown</span>
+        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add contact</Btn>
+      </div>
+
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(290px, 1fr))' }}>
+        {rows.map((c) => {
+          const age = daysSince(c.lastContactAt);
+          const statusColor = c.status === 'Active' ? C.green : c.status === 'Warm' ? C.brass : c.status === 'Prospect' ? '#3F6C8A' : C.mute;
+          return (
+            <div key={c.id} onClick={() => onEdit(c)}
+              style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `3px solid ${statusColor}`, padding: 14, cursor: 'pointer' }}>
+              <div className="flex items-start justify-between gap-2">
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontFamily: SERIF, fontSize: 16, color: C.green, lineHeight: 1.2 }}>{c.name}</div>
+                  <div style={{ fontSize: 12, color: C.mute, marginTop: 2 }}>{c.title}</div>
+                  <div style={{ fontSize: 12, fontWeight: 600 }}>{clientById[c.clientId]?.name || 'No company'}</div>
+                </div>
+                {c.role && <Pill color={C.navy}>{c.role}</Pill>}
+              </div>
+
+              <div className="flex flex-col gap-1" style={{ marginTop: 10, fontSize: 11.5 }}>
+                {c.email && <span className="flex items-center gap-1.5" style={{ color: C.green }}><Mail size={11} /> {c.email}</span>}
+                {c.phone && <span className="flex items-center gap-1.5" style={{ color: C.mute }}><Phone size={11} /> {c.phone}</span>}
+                {c.linkedin && <span className="flex items-center gap-1.5" style={{ color: C.mute }}><Linkedin size={11} /> LinkedIn on file</span>}
+              </div>
+
+              {c.nextStep && (
+                <div style={{ fontSize: 11.5, color: C.mute, marginTop: 9, paddingTop: 9, borderTop: `1px solid ${C.lineSoft}`, lineHeight: 1.5 }}>
+                  <strong style={{ color: C.ink }}>Next:</strong> {c.nextStep}
+                  {c.nextStepDate && <span style={{ color: C.brass, fontWeight: 700 }}> · {fmtDate(c.nextStepDate)}</span>}
+                </div>
+              )}
+
+              <div className="flex items-center justify-between" style={{ marginTop: 10 }}>
+                <Pill color={statusColor}>{c.status}</Pill>
+                <span style={{ fontSize: 10.5, color: age >= 30 ? C.red : age >= 14 ? C.brass : C.mute }}>
+                  {age === null ? 'No contact logged' : `${age}d since contact`}
+                </span>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function ContactForm({ record, clients, owners, nav, onClose, onSave, onDelete }) {
+  const [f, setF] = useState(
+    record || {
+      id: uid('ct'), name: '', title: '', clientId: '', email: '', phone: '', mobile: '',
+      linkedin: '', location: '', role: '', status: 'Prospect', owner: owners[0] || '',
+      source: '', nextStep: '', nextStepDate: '', lastContactAt: '', notes: [],
+    }
+  );
+  const [note, setNote] = useState('');
+  const [confirmDel, setConfirmDel] = useState(false);
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+
+  const addNote = () => {
+    if (!note.trim()) return;
+    setF((p) => ({
+      ...p,
+      lastContactAt: nowISO(),
+      notes: [...(p.notes || []), { id: uid('n'), ts: nowISO(), kind: 'note', body: note.trim() }],
+    }));
+    setNote('');
+  };
+
+  return (
+    <Modal title={record ? 'Contact' : 'Add contact'} onClose={onClose} wide>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(180px, 1fr))' }}>
+        <Field label="Full name"><TextInput value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Required" /></Field>
+        <Field label="Title"><TextInput value={f.title} onChange={(e) => set('title', e.target.value)} /></Field>
+        <Field label="Company">
+          <Select value={f.clientId} onChange={(e) => set('clientId', e.target.value)}>
+            <option value="">Unassigned</option>
+            {clients.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+          </Select>
+        </Field>
+        <Field label="Role in the deal">
+          <Select value={f.role} onChange={(e) => set('role', e.target.value)}>
+            <option value="">Not set</option>
+            {CONTACT_ROLES.map((r) => <option key={r}>{r}</option>)}
+          </Select>
+        </Field>
+        <Field label="Email"><TextInput value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
+        <Field label="Direct line"><TextInput value={f.phone} onChange={(e) => set('phone', e.target.value)} /></Field>
+        <Field label="Mobile"><TextInput value={f.mobile} onChange={(e) => set('mobile', e.target.value)} /></Field>
+        <Field label="LinkedIn"><TextInput value={f.linkedin} onChange={(e) => set('linkedin', e.target.value)} /></Field>
+        <Field label="Location"><TextInput value={f.location} onChange={(e) => set('location', e.target.value)} /></Field>
+        <Field label="Status">
+          <Select value={f.status} onChange={(e) => set('status', e.target.value)}>
+            {CONTACT_STATUS.map((s) => <option key={s}>{s}</option>)}
+          </Select>
+        </Field>
+        <Field label="Owner">
+          <Select value={f.owner} onChange={(e) => set('owner', e.target.value)}>
+            <option value="">Unassigned</option>
+            {owners.map((o) => <option key={o}>{o}</option>)}
+          </Select>
+        </Field>
+        <Field label="How you met"><TextInput value={f.source} onChange={(e) => set('source', e.target.value)} placeholder="Referral, conference, inbound" /></Field>
+        <Field label="Next step"><TextInput value={f.nextStep} onChange={(e) => set('nextStep', e.target.value)} placeholder="Send the Meridian shortlist" /></Field>
+        <Field label="Next step date">
+          <TextInput type="date" value={f.nextStepDate ? f.nextStepDate.slice(0, 10) : ''} onChange={(e) => set('nextStepDate', e.target.value)} />
+        </Field>
+      </div>
+
+      {f.clientId && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+          <RelatedList title="Company" empty="No company linked."
+            items={nav.clientById[f.clientId] ? [{
+              key: f.clientId, label: nav.clientById[f.clientId].name, sub: nav.clientById[f.clientId].type,
+              onClick: () => nav.goTo('client', f.clientId),
+            }] : []} />
+          <RelatedList title="Searches at this company" empty="No searches on this account."
+            items={nav.rel.searchesOfClient(f.clientId).map((sr) => ({
+              key: sr.id, label: sr.role, sub: sr.status, onClick: () => nav.goTo('search', sr.id),
+            }))} />
+          <RelatedList title="Candidates in play" empty="No candidates against this company yet."
+            items={nav.rel.candidatesOfClient(f.clientId).slice(0, 8).map((cd) => ({
+              key: cd.id, label: cd.name, sub: stageOf(cd.stage).label, onClick: () => nav.goTo('candidate', cd.id),
+            }))} />
+        </div>
+      )}
+
+      <div style={{ marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+        <div style={{ fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 700, marginBottom: 7 }}>
+          Notes
+        </div>
+        <TextArea rows={2} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What came out of the last conversation?" />
+        <div className="flex justify-end" style={{ marginTop: 7 }}>
+          <Btn size="sm" kind="ghost" onClick={addNote} disabled={!note.trim()}>Add note</Btn>
+        </div>
+        <div style={{ maxHeight: 180, overflowY: 'auto', marginTop: 6 }}>
+          {(f.notes || []).length === 0 && <Quiet>No notes on this contact yet.</Quiet>}
+          {[...(f.notes || [])].reverse().map((n) => (
+            <div key={n.id} style={{ padding: '8px 0', borderBottom: `1px solid ${C.lineSoft}` }}>
+              <div style={{ fontSize: 10.5, color: C.mute, marginBottom: 3 }}>
+                {new Date(n.ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+              </div>
+              <div style={{ fontSize: 12.5, lineHeight: 1.55 }}>{n.body}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <div className="flex items-center justify-between" style={{ marginTop: 18 }}>
+        <div>
+          {record && (confirmDel ? (
+            <div className="flex items-center gap-2">
+              <span style={{ fontSize: 12, color: C.red }}>Delete this contact?</span>
+              <Btn size="sm" kind="danger" onClick={() => onDelete(f.id)}>Delete</Btn>
+              <Btn size="sm" kind="ghost" onClick={() => setConfirmDel(false)}>Keep</Btn>
+            </div>
+          ) : (
+            <Btn size="sm" kind="danger" onClick={() => setConfirmDel(true)}><Trash2 size={12} /> Delete</Btn>
+          ))}
+        </div>
+        <div className="flex gap-2">
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={() => onSave(f)} disabled={!f.name.trim()}>Save contact</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function ClientForm({ record, nav, onClose, onSave }) {
   const [f, setF] = useState(record || { id: uid('cl'), name: '', type: 'Direct', contactName: '', contactTitle: '', email: '', phone: '', status: 'Prospect', notes: '' });
   const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
   return (
@@ -1551,9 +1939,27 @@ function ClientForm({ record, onClose, onSave }) {
         <Field label="Phone"><TextInput value={f.phone} onChange={(e) => set('phone', e.target.value)} /></Field>
         <Field label="Notes" span={2}><TextArea rows={3} value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
       </div>
+
+      {record && (
+        <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(200px, 1fr))', marginTop: 16, paddingTop: 14, borderTop: `1px solid ${C.line}` }}>
+          <RelatedList title="Searches" empty="No searches on this account."
+            items={nav.rel.searchesOfClient(f.id).map((sr) => ({
+              key: sr.id, label: sr.role, sub: sr.status, onClick: () => nav.goTo('search', sr.id),
+            }))} />
+          <RelatedList title="Contacts" empty="No contacts yet."
+            items={nav.rel.contactsOfClient(f.id).map((ct) => ({
+              key: ct.id, label: ct.name, sub: ct.role || ct.title, onClick: () => nav.goTo('contact', ct.id),
+            }))} />
+          <RelatedList title="Candidates" empty="No candidates against this company yet."
+            items={nav.rel.candidatesOfClient(f.id).slice(0, 10).map((cd) => ({
+              key: cd.id, label: cd.name, sub: stageOf(cd.stage).label, onClick: () => nav.goTo('candidate', cd.id),
+            }))} />
+        </div>
+      )}
+
       <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
         <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
-        <Btn onClick={() => onSave(f)} disabled={!f.name.trim()}>Save client</Btn>
+        <Btn onClick={() => onSave(f)} disabled={!f.name.trim()}>Save company</Btn>
       </div>
     </Modal>
   );
