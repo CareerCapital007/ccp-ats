@@ -724,7 +724,8 @@ export default function App() {
         {view === 'searches' && (
           <SearchesView searches={data.searches} candidates={data.candidates} tags={tags} nav={nav}
             onAdd={() => setModal({ type: 'search' })} onEdit={(s) => setModal({ type: 'search', payload: s })}
-            onJump={(id) => { setFSearch(id); setMode('board'); setView('candidates'); }} />
+            onJump={(id) => { setFSearch(id); setMode('board'); setView('candidates'); }}
+            onAssign={(sr) => setModal({ type: 'assign', payload: sr })} />
         )}
         {view === 'contacts' && (
           <ContactsView contacts={data.contacts} clients={data.clients} nav={nav}
@@ -754,6 +755,32 @@ export default function App() {
       )}
       {modal?.type === 'client' && (
         <ClientForm record={modal.payload} nav={nav} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
+      )}
+      {modal?.type === 'assign' && (
+        <AssignCandidates
+          search={modal.payload}
+          candidates={data.candidates}
+          searchById={searchById}
+          onClose={() => setModal(null)}
+          onAssign={(ids) => {
+            bulkPatch(ids, { searchId: modal.payload.id }, `Added to ${modal.payload.client} - ${modal.payload.role}`);
+            setModal(null);
+          }}
+          onCreate={(name) => {
+            const c = {
+              id: uid('c'), name, title: '', company: '', email: '', phone: '', linkedin: '', location: '',
+              functionTags: modal.payload.functionTags || [], searchId: modal.payload.id, stage: 'identified',
+              owner: modal.payload.owner || '', source: 'Added from search', compCurrent: '', compTarget: '',
+              resumeLink: '', nextStep: '', nextStepDate: '', lastContactAt: nowISO(),
+              createdAt: nowISO(), updatedAt: nowISO(),
+              notes: [{ id: uid('n'), ts: nowISO(), kind: 'system', body: `Created on ${modal.payload.role}` }],
+            };
+            persist({ ...data, candidates: [c, ...data.candidates] });
+            setModal(null);
+            setOpen(c.id);
+            setView('candidates');
+          }}
+        />
       )}
       {modal?.type === 'contact' && (
         <ContactForm record={modal.payload} clients={data.clients} owners={data.meta.owners} nav={nav}
@@ -1067,7 +1094,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
 /* ============================================================
    VIEW: SEARCHES
    ============================================================ */
-function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump }) {
+function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump, onAssign }) {
   if (!searches.length) {
     return <Empty icon={Briefcase} title="No searches yet" hint="A search is one client mandate: company, role, function, owner, and target close date. Candidates get logged against it."
       action={<Btn onClick={onAdd}><Plus size={13} /> Add a search</Btn>} />;
@@ -1116,9 +1143,10 @@ function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump }
                   <strong style={{ fontFamily: SERIF, fontSize: 15, color: C.brass }}>{mine.length}</strong>
                   <span style={{ color: C.mute }}> candidates</span>
                 </span>
-                <div className="flex gap-2">
+                <div className="flex flex-wrap gap-2">
                   <Btn size="sm" kind="ghost" onClick={() => onEdit(s)}>Edit</Btn>
-                  <Btn size="sm" onClick={() => onJump(s.id)}>Open pipeline</Btn>
+                  <Btn size="sm" kind="ghost" onClick={() => onJump(s.id)}>Open board</Btn>
+                  <Btn size="sm" onClick={() => onAssign(s)}><Plus size={12} /> Add candidates</Btn>
                 </div>
               </div>
             </div>
@@ -1315,6 +1343,9 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
             </select>
             <span style={{ fontSize: 11, opacity: 0.7 }}>Last contact {fmtDate(c.lastContactAt || c.updatedAt)} · {age}d</span>
             <Btn size="sm" kind="brass" onClick={() => onPatch(c.id, { lastContactAt: nowISO() }, 'Contact logged')}>Log contact</Btn>
+            <Btn size="sm" kind="ghost" onClick={() => setTab('details')}>
+              <span style={{ color: '#fff' }}>Edit profile</span>
+            </Btn>
           </div>
         </div>
 
@@ -1364,7 +1395,7 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
 
         {/* tabs */}
         <div className="flex" style={{ background: C.card, borderBottom: `1px solid ${C.line}` }}>
-          {[{ id: 'notes', l: 'Notes' }, { id: 'resume', l: 'Resume' }, { id: 'details', l: 'Details' }].map((t) => (
+          {[{ id: 'notes', l: 'Notes' }, { id: 'resume', l: 'Resume' }, { id: 'details', l: 'Edit profile' }].map((t) => (
             <button key={t.id} onClick={() => setTab(t.id)}
               style={{ padding: '9px 15px', fontSize: 11, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', cursor: 'pointer',
                 color: tab === t.id ? C.green : C.mute, borderBottom: `2px solid ${tab === t.id ? C.brass : 'transparent'}` }}>
@@ -1447,6 +1478,9 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
 
           {tab === 'details' && (
             <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
+              <div style={{ gridColumn: 'span 2', fontSize: 11.5, color: C.mute, lineHeight: 1.6, paddingBottom: 4 }}>
+                Every field below is editable and saves as you type.
+              </div>
               <Field label="Name" span={2}><TextInput value={c.name || ''} onChange={(e) => onPatch(c.id, { name: e.target.value })} /></Field>
               <Field label="Title"><TextInput value={c.title || ''} onChange={(e) => onPatch(c.id, { title: e.target.value })} /></Field>
               <Field label="Company"><TextInput value={c.company || ''} onChange={(e) => onPatch(c.id, { company: e.target.value })} /></Field>
@@ -1699,6 +1733,94 @@ function ContactsView({ contacts, clients, onAdd, onEdit }) {
         })}
       </div>
     </div>
+  );
+}
+
+function AssignCandidates({ search, candidates, searchById, onClose, onAssign, onCreate }) {
+  const [q, setQ] = useState('');
+  const [sel, setSel] = useState([]);
+
+  const needle = q.trim().toLowerCase();
+  const matches = useMemo(() => {
+    const pool = candidates.filter((c) => c.searchId !== search.id);
+    if (!needle) return pool.slice(0, 25);
+    return pool
+      .filter((c) => [c.name, c.title, c.company].filter(Boolean).join(' ').toLowerCase().includes(needle))
+      .slice(0, 25);
+  }, [candidates, needle, search.id]);
+
+  const already = candidates.filter((c) => c.searchId === search.id).length;
+  const exactHit = candidates.some((c) => (c.name || '').toLowerCase() === needle);
+  const toggle = (id) => setSel((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+
+  return (
+    <Modal title={`Add candidates to ${search.role}`} onClose={onClose} wide>
+      <div style={{ marginBottom: 12 }}>
+        <Eyebrow style={{ marginBottom: 5 }}>{search.client}</Eyebrow>
+        <div style={{ fontSize: 12, color: C.mute, lineHeight: 1.6 }}>
+          {already} already on this search. Start typing a name to find someone already in the system.
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, padding: '7px 10px', background: '#fff' }}>
+        <SearchIcon size={14} style={{ color: C.mute }} />
+        <input
+          autoFocus
+          value={q}
+          onChange={(e) => setQ(e.target.value)}
+          placeholder="Type a candidate name"
+          style={{ border: 'none', outline: 'none', fontSize: 13, width: '100%', fontFamily: SANS }}
+        />
+      </div>
+
+      <div style={{ maxHeight: 340, overflowY: 'auto', marginTop: 10, border: `1px solid ${C.lineSoft}` }}>
+        {matches.length === 0 && (
+          <div style={{ padding: 16, fontSize: 12.5, color: C.mute, lineHeight: 1.6 }}>
+            {needle ? 'Nobody in the system matches that.' : 'No unassigned candidates yet.'}
+          </div>
+        )}
+        {matches.map((c) => {
+          const on = sel.includes(c.id);
+          const other = searchById[c.searchId];
+          return (
+            <div
+              key={c.id}
+              onClick={() => toggle(c.id)}
+              className="flex items-center gap-3"
+              style={{ padding: '9px 12px', borderBottom: `1px solid ${C.lineSoft}`, cursor: 'pointer', background: on ? C.brassSoft : C.card }}
+            >
+              <input type="checkbox" checked={on} readOnly />
+              <div className="flex-1" style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</div>
+                <div style={{ fontSize: 11, color: C.mute }}>
+                  {[c.title, c.company].filter(Boolean).join(' · ') || 'No title on file'}
+                </div>
+              </div>
+              {other && <Pill color={C.brass}>On {other.role}</Pill>}
+            </div>
+          );
+        })}
+      </div>
+
+      {needle && !exactHit && (
+        <div style={{ marginTop: 12, padding: '11px 13px', border: `1px dashed ${C.line}`, background: C.card }}>
+          <div style={{ fontSize: 12, color: C.mute, marginBottom: 8, lineHeight: 1.55 }}>
+            Not in the system yet?
+          </div>
+          <Btn size="sm" kind="ghost" onClick={() => onCreate(q.trim())}>
+            <Plus size={12} /> Create "{q.trim()}" on this search
+          </Btn>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between" style={{ marginTop: 18 }}>
+        <span style={{ fontSize: 11.5, color: C.mute }}>{sel.length} selected</span>
+        <div className="flex gap-2">
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={() => onAssign(sel)} disabled={!sel.length}>Add {sel.length || ''} to search</Btn>
+        </div>
+      </div>
+    </Modal>
   );
 }
 
