@@ -3,21 +3,24 @@ export default async (req) => {
     return new Response('Method not allowed', { status: 405 });
   }
 
-  // Confirm the caller holds a live login token issued by this Supabase project.
   const token = (req.headers.get('authorization') || '').replace('Bearer ', '').trim();
+  const projectRef = (process.env.SUPABASE_URL || '').split('//')[1]?.split('.')[0];
+
+  let reason = null;
   try {
-    const body = token.split('.')[1];
     const claims = JSON.parse(
-      atob(body.replace(/-/g, '+').replace(/_/g, '/'))
+      Buffer.from(token.split('.')[1], 'base64url').toString('utf8')
     );
-    const projectRef = (process.env.SUPABASE_URL || '').split('//')[1].split('.')[0];
-    const validIssuer = (claims.iss || '').includes(projectRef);
-    const notExpired = claims.exp * 1000 > Date.now();
-    if (!validIssuer || !notExpired) {
-      return new Response('Sign in required', { status: 401 });
-    }
+    if (!projectRef) reason = 'SUPABASE_URL not set';
+    else if (!String(claims.iss || '').includes(projectRef)) reason = 'issuer mismatch';
+    else if (claims.exp * 1000 <= Date.now()) reason = 'token expired';
   } catch (e) {
-    return new Response('Sign in required', { status: 401 });
+    reason = 'could not decode token';
+  }
+
+  if (reason) {
+    console.log('AUTH REJECTED:', reason);
+    return new Response(`Sign in required (${reason})`, { status: 401 });
   }
 
   const payload = JSON.parse(await req.text());
