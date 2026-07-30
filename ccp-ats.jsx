@@ -12,25 +12,29 @@ import {
    Single-file ATS / CRM. Data persists in shared artifact storage.
    ============================================================ */
 
+// Values read off careercapitalpartners.com. `green` keeps its name so every
+// existing reference picks up the navy without a rename.
 const C = {
-  green: '#173A2D',
-  greenMid: '#28513F',
-  greenSoft: '#EDF1EE',
-  navy: '#0E2436',
+  green: '#16233A',
+  greenMid: '#28374F',
+  greenSoft: '#EAE8E1',
+  navy: '#0E1A2B',
   brass: '#A98545',
-  brassSoft: '#F5EFE3',
-  paper: '#FBFAF7',
+  brassSoft: '#F1EADC',
+  paper: '#F2F0EA',
   card: '#FFFFFF',
-  line: '#E7E3DA',
-  lineSoft: '#F0EDE6',
-  ink: '#1A2028',
-  mute: '#767A80',
+  line: '#E0DCD2',
+  lineSoft: '#ECE9E1',
+  ink: '#16233A',
+  mute: '#6B7383',
   red: '#9B3B2E',
   amber: '#B37A1F',
+  placed: '#1F6B4A',
 };
 
-const SERIF = 'Georgia, "Times New Roman", serif';
-const SANS = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+const SERIF = "'Playfair Display', Georgia, 'Times New Roman', serif";
+const SANS = "'Jost', 'Helvetica Neue', Helvetica, Arial, sans-serif";
+const FONT_HREF = 'https://fonts.googleapis.com/css2?family=Playfair+Display:ital,wght@0,400;0,500;0,600;0,700;1,400;1,600&family=Jost:wght@300;400;500;600;700&display=swap';
 
 const CORE_KEY = 'ccp-ats-core-v1';
 const RESUME_PREFIX = 'ccp-resume:';
@@ -45,7 +49,7 @@ const STAGES = [
   { id: 'interview', label: 'Client Interview', color: '#8A6A2E' },
   { id: 'finalist', label: 'Finalist', color: '#28513F' },
   { id: 'offer', label: 'Offer', color: '#173A2D' },
-  { id: 'placed', label: 'Placed', color: '#1F6B4A' },
+  { id: 'placed', label: 'Placed', color: '#1F6B4A' }, // intentionally green: the only positive terminal state
   { id: 'passed', label: 'Passed', color: '#9B3B2E' },
 ];
 const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
@@ -221,17 +225,20 @@ const downloadCVFile = (rec) => {
 };
 
 /* ---------- small UI atoms ---------- */
-function Eyebrow({ children, color = C.brass, style }) {
+function Eyebrow({ children, color = C.brass, rule = true, style }) {
   return (
-    <div style={{ fontFamily: SANS, fontSize: 9, letterSpacing: 2, textTransform: 'uppercase', color, fontWeight: 700, ...style }}>
-      {children}
+    <div className="flex items-center gap-2" style={{ ...style }}>
+      {rule && <span style={{ display: 'inline-block', width: 22, height: 1, background: color, opacity: 0.75, flexShrink: 0 }} />}
+      <span style={{ fontFamily: SANS, fontSize: 9.5, letterSpacing: 2.4, textTransform: 'uppercase', color, fontWeight: 500 }}>
+        {children}
+      </span>
     </div>
   );
 }
 
 function Headline({ children, size = 20, color = C.green, style }) {
   return (
-    <div style={{ fontFamily: SERIF, fontSize: size, color, lineHeight: 1.2, letterSpacing: -0.2, ...style }}>
+    <div style={{ fontFamily: SERIF, fontSize: size, fontWeight: 600, color, lineHeight: 1.04, letterSpacing: -0.6, ...style }}>
       {children}
     </div>
   );
@@ -314,9 +321,9 @@ function TextArea(props) {
 function Btn({ children, onClick, kind = 'primary', size = 'md', disabled, title }) {
   const base = {
     fontFamily: SANS,
-    fontWeight: 700,
-    letterSpacing: 0.9,
-    textTransform: 'uppercase',
+    fontWeight: 500,
+    letterSpacing: 0.1,
+    textTransform: 'none',
     borderRadius: 0,
     cursor: disabled ? 'not-allowed' : 'pointer',
     opacity: disabled ? 0.5 : 1,
@@ -325,11 +332,11 @@ function Btn({ children, onClick, kind = 'primary', size = 'md', disabled, title
     gap: 6,
     whiteSpace: 'nowrap',
   };
-  const sizes = { sm: { fontSize: 9.5, padding: '6px 11px' }, md: { fontSize: 10.5, padding: '10px 18px' } };
+  const sizes = { sm: { fontSize: 12, padding: '7px 13px' }, md: { fontSize: 13.5, padding: '13px 24px' } };
   const kinds = {
     primary: { background: C.green, color: '#fff', border: `1px solid ${C.green}` },
     brass: { background: C.brass, color: '#fff', border: `1px solid ${C.brass}` },
-    ghost: { background: 'transparent', color: C.green, border: `1px solid ${C.line}` },
+    ghost: { background: '#fff', color: C.green, border: `1px solid ${C.line}` },
     danger: { background: 'transparent', color: C.red, border: `1px solid ${C.red}44` },
   };
   return (
@@ -343,7 +350,7 @@ function Modal({ title, onClose, children, wide }) {
   return (
     <div
       className="fixed inset-0 flex items-start justify-center overflow-y-auto"
-      style={{ background: 'rgba(14,36,54,0.45)', zIndex: 50, padding: 16 }}
+      style={{ background: 'rgba(22,35,58,0.42)', zIndex: 50, padding: 16 }}
       onClick={onClose}
     >
       <div
@@ -351,7 +358,7 @@ function Modal({ title, onClose, children, wide }) {
         className="w-full"
         style={{ maxWidth: wide ? 880 : 560, background: C.card, border: `1px solid ${C.line}`, marginTop: 24, marginBottom: 40 }}
       >
-        <div className="flex items-center justify-between" style={{ padding: '17px 22px', borderBottom: `1px solid ${C.greenMid}`, background: C.green }}>
+        <div className="flex items-center justify-between" style={{ padding: '17px 22px', background: C.green }}>
           <h3 style={{ fontFamily: SERIF, fontSize: 19, color: '#fff', margin: 0, letterSpacing: -0.2 }}>{title}</h3>
           <button onClick={onClose} style={{ color: '#fff', opacity: 0.8, cursor: 'pointer' }}>
             <X size={17} />
@@ -395,6 +402,15 @@ export default function App() {
   const [fOwner, setFOwner] = useState('');
   const [open, setOpen] = useState(null); // candidate id
   const [modal, setModal] = useState(null);
+
+  useEffect(() => {
+    if (document.getElementById('ccp-fonts')) return;
+    const l = document.createElement('link');
+    l.id = 'ccp-fonts';
+    l.rel = 'stylesheet';
+    l.href = FONT_HREF;
+    document.head.appendChild(l);
+  }, []);
 
   /* ---- load ---- */
   useEffect(() => {
@@ -657,41 +673,42 @@ export default function App() {
   return (
     <div style={{ background: C.paper, minHeight: '100vh', fontFamily: SANS, color: C.ink }}>
       {/* ---------- masthead ---------- */}
-      <div style={{ background: C.green, color: '#fff' }}>
-        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: '18px 22px 14px' }}>
+      <div style={{ background: C.paper, color: C.green, borderBottom: `1px solid ${C.line}` }}>
+        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: '20px 26px 16px' }}>
           <div className="flex items-center gap-3">
-            <svg width="22" height="22" viewBox="0 0 24 24" aria-hidden="true">
-              <path d="M3 15 L9 9 L12 12 L21 3" stroke={C.brass} strokeWidth="2.2" fill="none" strokeLinecap="square" />
-              <path d="M3 21 L9 15 L12 18 L21 9" stroke="#ffffff" strokeWidth="1.4" fill="none" strokeLinecap="square" opacity="0.5" />
+            <svg width="26" height="20" viewBox="0 0 26 20" aria-hidden="true">
+              <path d="M2 12 L13 2 L24 12" stroke={C.brass} strokeWidth="3.4" fill="none" strokeLinejoin="miter" />
+              <path d="M2 18 L13 8 L24 18" stroke={C.green} strokeWidth="3.4" fill="none" strokeLinejoin="miter" />
             </svg>
             <div>
-              <div style={{ fontFamily: SERIF, fontSize: 18, letterSpacing: 0.1, lineHeight: 1.1 }}>Career Capital Partners</div>
-              <div style={{ fontSize: 9, letterSpacing: 2.2, textTransform: 'uppercase', color: C.brass, fontWeight: 700, marginTop: 3 }}>
+              <div style={{ fontFamily: SANS, fontSize: 15, fontWeight: 600, letterSpacing: 1.6, textTransform: 'uppercase', lineHeight: 1.1, color: C.green }}>
+                Career Capital Partners
+              </div>
+              <div style={{ fontSize: 9.5, letterSpacing: 2.4, textTransform: 'uppercase', color: C.brass, fontWeight: 500, marginTop: 4, fontFamily: SANS }}>
                 Search Ledger
               </div>
             </div>
           </div>
           <div className="flex items-center gap-2">
             {saving ? (
-              <span style={{ fontSize: 11, opacity: 0.7 }}>Saving</span>
+              <span style={{ fontSize: 11.5, color: C.mute }}>Saving</span>
             ) : (
-              <span className="flex items-center gap-1" style={{ fontSize: 11, opacity: 0.6 }}>
+              <span className="flex items-center gap-1" style={{ fontSize: 11.5, color: C.mute }}>
                 <Check size={12} /> Saved
               </span>
             )}
-            <Btn kind="brass" size="sm" onClick={() => setModal({ type: 'cv' })}>
-              <UploadCloud size={13} /> Import CVs
-            </Btn>
             <Btn kind="ghost" size="sm" onClick={() => setModal({ type: 'candidate' })}>
-              <Plus size={13} style={{ color: '#fff' }} />
-              <span style={{ color: '#fff' }}>Candidate</span>
+              <Plus size={13} /> Candidate
+            </Btn>
+            <Btn size="sm" onClick={() => setModal({ type: 'cv' })}>
+              Import CVs <ArrowRight size={13} />
             </Btn>
             <Btn kind="ghost" size="sm" onClick={() => setModal({ type: 'settings' })}>
-              <Settings size={13} style={{ color: '#fff' }} />
+              <Settings size={13} />
             </Btn>
           </div>
         </div>
-        <div className="flex" style={{ borderTop: `1px solid ${C.greenMid}`, overflowX: 'auto' }}>
+        <div className="flex" style={{ padding: '0 26px', overflowX: 'auto' }}>
           {NAV.map((n) => {
             const on = view === n.id;
             return (
@@ -718,8 +735,8 @@ export default function App() {
         </div>
       </div>
 
-      <div style={{ background: C.card, borderBottom: `1px solid ${C.line}`, padding: '9px 22px' }}>
-        <span style={{ fontFamily: SERIF, fontSize: 12.5, color: C.mute, fontStyle: 'italic' }}>
+      <div style={{ background: C.paper, borderBottom: `1px solid ${C.line}`, padding: '10px 26px' }}>
+        <span style={{ fontFamily: SERIF, fontSize: 14, color: C.mute, fontStyle: 'italic' }}>
           Leadership is the capital that compounds.
         </span>
       </div>
@@ -759,7 +776,7 @@ export default function App() {
         </div>
       )}
 
-      <div style={{ padding: '26px 22px 34px' }}>
+      <div style={{ padding: '30px 26px 40px' }}>
         {view === 'candidates' && mode === 'board' && (
           <PipelineView rows={filtered} tags={tags} onOpen={setOpen} onStage={setStage}
             onAdd={() => setModal({ type: 'candidate' })} activeSearch={fSearch} searchById={searchById}
@@ -789,7 +806,7 @@ export default function App() {
         )}
       </div>
 
-      <div style={{ padding: '18px 22px', borderTop: `1px solid ${C.line}` }}>
+      <div style={{ padding: '20px 26px', borderTop: `1px solid ${C.line}` }}>
         <Eyebrow color={C.mute}>Career Capital Partners &nbsp;·&nbsp; Private &amp; Confidential &nbsp;·&nbsp; Shared with everyone who has access</Eyebrow>
       </div>
 
@@ -1396,7 +1413,7 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
   const age = daysSince(c.lastContactAt || c.updatedAt) ?? 0;
 
   return (
-    <div className="fixed inset-0 flex justify-end" style={{ background: 'rgba(14,36,54,0.45)', zIndex: 60 }} onClick={onClose}>
+    <div className="fixed inset-0 flex justify-end" style={{ background: 'rgba(22,35,58,0.42)', zIndex: 60 }} onClick={onClose}>
       <div onClick={(e) => e.stopPropagation()} className="w-full flex flex-col"
         style={{ maxWidth: 520, background: C.paper, height: '100%', overflowY: 'auto' }}>
         {/* head */}
