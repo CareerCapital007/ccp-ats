@@ -1,0 +1,1809 @@
+import React, { useState, useEffect, useMemo, useCallback, useRef } from 'react';
+import mammoth from 'mammoth';
+import {
+  Plus, X, Download, Users, Briefcase, Building2, CalendarClock, FileText,
+  Search as SearchIcon, Trash2, Check, AlertCircle, Loader2, Upload, Settings,
+  Mail, Phone, Linkedin, ExternalLink, ArrowRight, Circle,
+  UploadCloud, Paperclip, RefreshCw, Wand2
+} from 'lucide-react';
+
+/* ============================================================
+   CAREER CAPITAL PARTNERS - Search Ledger
+   Single-file ATS / CRM. Data persists in shared artifact storage.
+   ============================================================ */
+
+const C = {
+  green: '#173A2D',
+  greenMid: '#28513F',
+  greenSoft: '#EAEFEA',
+  navy: '#0E2436',
+  brass: '#A98545',
+  brassSoft: '#F3ECDF',
+  paper: '#F6F5F1',
+  card: '#FFFFFF',
+  line: '#E2DED4',
+  lineSoft: '#EFEDE7',
+  ink: '#1A2028',
+  mute: '#6E7379',
+  red: '#9B3B2E',
+  amber: '#B37A1F',
+};
+
+const SERIF = 'Georgia, "Times New Roman", serif';
+const SANS = '"Helvetica Neue", Helvetica, Arial, sans-serif';
+
+const CORE_KEY = 'ccp-ats-core-v1';
+const RESUME_PREFIX = 'ccp-resume:';
+const CVFILE_PREFIX = 'ccp-cv-file:';
+const MAX_CV_BYTES = 2_600_000; // keeps the stored base64 under the 5MB per-record ceiling
+
+const STAGES = [
+  { id: 'identified', label: 'Identified', color: '#8B9099' },
+  { id: 'outreach', label: 'Outreach', color: '#5B7C99' },
+  { id: 'screened', label: 'Screened', color: '#3F6C8A' },
+  { id: 'submitted', label: 'Client Submitted', color: '#A98545' },
+  { id: 'interview', label: 'Client Interview', color: '#8A6A2E' },
+  { id: 'finalist', label: 'Finalist', color: '#28513F' },
+  { id: 'offer', label: 'Offer', color: '#173A2D' },
+  { id: 'placed', label: 'Placed', color: '#1F6B4A' },
+  { id: 'passed', label: 'Passed', color: '#9B3B2E' },
+];
+const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
+const ACTIVE_STAGES = ['identified', 'outreach', 'screened', 'submitted', 'interview', 'finalist', 'offer'];
+
+const TAG_COLORS = ['#173A2D', '#A98545', '#3F6C8A', '#7A4A6B', '#8A6A2E', '#2F6B5A', '#9B3B2E', '#4A5568'];
+
+const DEFAULT_TAGS = [
+  'Sales', 'AI Engineering', 'Product', 'Strategy & Operations',
+  'Engineering', 'Finance', 'Marketing', 'People & Talent', 'Executive / GM',
+];
+
+const SEED = {
+  candidates: [],
+  searches: [],
+  clients: [],
+  meta: { tags: DEFAULT_TAGS, owners: ['Recruiter', 'Joe Carbone'] },
+};
+
+/* ---------- helpers ---------- */
+const uid = (p) => `${p}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+const nowISO = () => new Date().toISOString();
+const daysSince = (iso) => (iso ? Math.floor((Date.now() - new Date(iso).getTime()) / 86400000) : null);
+const fmtDate = (iso) =>
+  iso ? new Date(iso).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: '2-digit' }) : '-';
+const startOfWeek = () => {
+  const d = new Date();
+  const day = d.getDay();
+  d.setDate(d.getDate() - ((day + 6) % 7));
+  d.setHours(0, 0, 0, 0);
+  return d.getTime();
+};
+const tagColor = (tags, t) => TAG_COLORS[Math.max(0, tags.indexOf(t)) % TAG_COLORS.length];
+
+/* ---------- CV reading + parsing ---------- */
+const fileToBase64 = (file) =>
+  new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result).split(',')[1]);
+    r.onerror = () => rej(new Error('That file could not be read.'));
+    r.readAsDataURL(file);
+  });
+
+const fileToText = (file) =>
+  new Promise((res, rej) => {
+    const r = new FileReader();
+    r.onload = () => res(String(r.result));
+    r.onerror = () => rej(new Error('That file could not be read.'));
+    r.readAsText(file);
+  });
+
+const kindOf = (file) => {
+  const n = (file.name || '').toLowerCase();
+  if (file.type === 'application/pdf' || n.endsWith('.pdf')) return 'pdf';
+  if (n.endsWith('.docx')) return 'docx';
+  if (n.endsWith('.txt') || n.endsWith('.md') || file.type === 'text/plain') return 'text';
+  if ((file.type || '').startsWith('image/')) return 'image';
+  return 'unsupported';
+};
+
+const PARSE_FIELDS = `{
+  "name": "full name",
+  "title": "current job title",
+  "company": "current employer",
+  "email": "",
+  "phone": "",
+  "linkedin": "full URL or empty string",
+  "location": "city, state or city, country",
+  "functionTags": ["only values chosen from the allowed list"],
+  "seniority": "one of: Individual Contributor, Manager, Director, VP, C-Level, Board",
+  "yearsExperience": "number as a string",
+  "compCurrent": "only if the CV states it, otherwise empty string",
+  "summary": "two sentences on what this person does and the scale they operate at",
+  "highlights": ["up to four short achievement lines with numbers where the CV gives them"],
+  "resumeDigest": "a compact plain-text record: each role as Company | Title | Dates on its own line, then a Skills line. No commentary."
+}`;
+
+async function parseCV(file, tags) {
+  const kind = kindOf(file);
+  if (kind === 'unsupported') throw new Error('Unsupported file. Use PDF, DOCX, TXT, or an image.');
+
+  const instruction =
+    `You are parsing an executive recruiting CV. Extract the fields below and return ONLY a JSON object, ` +
+    `with no preamble, no explanation, and no markdown fences.\n\n` +
+    `Allowed values for functionTags (choose every one that genuinely applies, and nothing outside this list): ` +
+    `${JSON.stringify(tags)}.\n\n` +
+    `Use an empty string for anything the CV does not state. Never invent contact details or employers.\n\n` +
+    `Return exactly this shape:\n${PARSE_FIELDS}`;
+
+  let content;
+  let localText = '';
+
+  if (kind === 'docx') {
+    const buf = await file.arrayBuffer();
+    const out = await mammoth.extractRawText({ arrayBuffer: buf });
+    localText = (out.value || '').trim();
+    if (!localText) throw new Error('No text found in that DOCX.');
+    content = [{ type: 'text', text: `${instruction}\n\nCV TEXT:\n${localText.slice(0, 40000)}` }];
+  } else if (kind === 'text') {
+    localText = (await fileToText(file)).trim();
+    content = [{ type: 'text', text: `${instruction}\n\nCV TEXT:\n${localText.slice(0, 40000)}` }];
+  } else if (kind === 'pdf') {
+    const b64 = await fileToBase64(file);
+    content = [
+      { type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: b64 } },
+      { type: 'text', text: instruction },
+    ];
+  } else {
+    const b64 = await fileToBase64(file);
+    content = [
+      { type: 'image', source: { type: 'base64', media_type: file.type || 'image/png', data: b64 } },
+      { type: 'text', text: instruction },
+    ];
+  }
+
+  const res = await fetch('https://api.anthropic.com/v1/messages', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: 'claude-sonnet-4-6', max_tokens: 1000, messages: [{ role: 'user', content }] }),
+  });
+  if (!res.ok) throw new Error('The parser did not respond. Try that file again.');
+
+  const data = await res.json();
+  const raw = (data.content || []).filter((b) => b.type === 'text').map((b) => b.text).join('\n');
+  let parsed;
+  try {
+    parsed = JSON.parse(raw.replace(/```json|```/g, '').trim());
+  } catch (e) {
+    const a = raw.indexOf('{');
+    const b = raw.lastIndexOf('}');
+    if (a === -1 || b === -1) throw new Error('The CV could not be read into fields.');
+    parsed = JSON.parse(raw.slice(a, b + 1));
+  }
+
+  const allowed = new Set(tags);
+  parsed.functionTags = (parsed.functionTags || []).filter((t) => allowed.has(t));
+  parsed.highlights = (parsed.highlights || []).filter(Boolean);
+  parsed.localText = localText;
+  return parsed;
+}
+
+const buildResumeText = (p) => {
+  const parts = [];
+  if (p.localText) return p.localText;
+  if (p.summary) parts.push(p.summary);
+  if (p.highlights?.length) parts.push(p.highlights.map((h) => `- ${h}`).join('\n'));
+  if (p.resumeDigest) parts.push(p.resumeDigest);
+  return parts.join('\n\n');
+};
+
+const packCVFile = async (file) => {
+  if (file.size > MAX_CV_BYTES) return null;
+  return { name: file.name, type: file.type || 'application/octet-stream', data: await fileToBase64(file) };
+};
+
+const downloadCVFile = (rec) => {
+  const bin = atob(rec.data);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([bytes], { type: rec.type }));
+  a.download = rec.name;
+  a.click();
+};
+
+/* ---------- small UI atoms ---------- */
+function Pill({ children, color = C.green, filled = false, onClick, title }) {
+  return (
+    <span
+      title={title}
+      onClick={onClick}
+      className="inline-flex items-center rounded-full"
+      style={{
+        fontFamily: SANS,
+        fontSize: 10.5,
+        letterSpacing: 0.3,
+        fontWeight: 600,
+        padding: '2px 8px',
+        color: filled ? '#fff' : color,
+        background: filled ? color : `${color}14`,
+        border: `1px solid ${color}33`,
+        cursor: onClick ? 'pointer' : 'default',
+        whiteSpace: 'nowrap',
+      }}
+    >
+      {children}
+    </span>
+  );
+}
+
+function Field({ label, children, span }) {
+  return (
+    <label className="flex flex-col gap-1" style={{ gridColumn: span ? `span ${span}` : undefined }}>
+      <span style={{ fontFamily: SANS, fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 700 }}>
+        {label}
+      </span>
+      {children}
+    </label>
+  );
+}
+
+const inputStyle = {
+  fontFamily: SANS,
+  fontSize: 13,
+  padding: '7px 9px',
+  border: `1px solid ${C.line}`,
+  background: '#fff',
+  color: C.ink,
+  borderRadius: 3,
+  outline: 'none',
+  width: '100%',
+};
+
+function TextInput(props) {
+  return <input {...props} style={{ ...inputStyle, ...(props.style || {}) }} />;
+}
+function Select({ children, ...p }) {
+  return (
+    <select {...p} style={{ ...inputStyle, ...(p.style || {}) }}>
+      {children}
+    </select>
+  );
+}
+function TextArea(props) {
+  return <textarea {...props} style={{ ...inputStyle, resize: 'vertical', lineHeight: 1.5, ...(props.style || {}) }} />;
+}
+
+function Btn({ children, onClick, kind = 'primary', size = 'md', disabled, title }) {
+  const base = {
+    fontFamily: SANS,
+    fontWeight: 600,
+    letterSpacing: 0.2,
+    borderRadius: 3,
+    cursor: disabled ? 'not-allowed' : 'pointer',
+    opacity: disabled ? 0.5 : 1,
+    display: 'inline-flex',
+    alignItems: 'center',
+    gap: 6,
+    whiteSpace: 'nowrap',
+  };
+  const sizes = { sm: { fontSize: 11.5, padding: '5px 9px' }, md: { fontSize: 12.5, padding: '8px 13px' } };
+  const kinds = {
+    primary: { background: C.green, color: '#fff', border: `1px solid ${C.green}` },
+    brass: { background: C.brass, color: '#fff', border: `1px solid ${C.brass}` },
+    ghost: { background: 'transparent', color: C.green, border: `1px solid ${C.line}` },
+    danger: { background: 'transparent', color: C.red, border: `1px solid ${C.red}44` },
+  };
+  return (
+    <button title={title} disabled={disabled} onClick={onClick} style={{ ...base, ...sizes[size], ...kinds[kind] }}>
+      {children}
+    </button>
+  );
+}
+
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div
+      className="fixed inset-0 flex items-start justify-center overflow-y-auto"
+      style={{ background: 'rgba(14,36,54,0.45)', zIndex: 50, padding: 16 }}
+      onClick={onClose}
+    >
+      <div
+        onClick={(e) => e.stopPropagation()}
+        className="w-full"
+        style={{ maxWidth: wide ? 880 : 560, background: C.card, border: `1px solid ${C.line}`, marginTop: 24, marginBottom: 40 }}
+      >
+        <div className="flex items-center justify-between" style={{ padding: '14px 18px', borderBottom: `1px solid ${C.line}`, background: C.green }}>
+          <h3 style={{ fontFamily: SERIF, fontSize: 17, color: '#fff', margin: 0 }}>{title}</h3>
+          <button onClick={onClose} style={{ color: '#fff', opacity: 0.8, cursor: 'pointer' }}>
+            <X size={17} />
+          </button>
+        </div>
+        <div style={{ padding: 18 }}>{children}</div>
+      </div>
+    </div>
+  );
+}
+
+function Empty({ icon: Icon, title, hint, action }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center" style={{ padding: '56px 20px' }}>
+      <Icon size={26} style={{ color: C.brass, marginBottom: 12 }} />
+      <div style={{ fontFamily: SERIF, fontSize: 17, color: C.green, marginBottom: 5 }}>{title}</div>
+      <div style={{ fontFamily: SANS, fontSize: 12.5, color: C.mute, maxWidth: 380, lineHeight: 1.6, marginBottom: 14 }}>{hint}</div>
+      {action}
+    </div>
+  );
+}
+
+/* ============================================================
+   MAIN
+   ============================================================ */
+export default function App() {
+  const [data, setData] = useState(SEED);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState(null);
+  const [view, setView] = useState('week');
+  const [q, setQ] = useState('');
+  const [fTag, setFTag] = useState('');
+  const [fSearch, setFSearch] = useState('');
+  const [fOwner, setFOwner] = useState('');
+  const [open, setOpen] = useState(null); // candidate id
+  const [modal, setModal] = useState(null);
+
+  /* ---- load ---- */
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await window.storage.get(CORE_KEY, true);
+        const parsed = r && r.value ? JSON.parse(r.value) : null;
+        if (parsed) {
+          setData({
+            candidates: parsed.candidates || [],
+            searches: parsed.searches || [],
+            clients: parsed.clients || [],
+            meta: { tags: parsed.meta?.tags?.length ? parsed.meta.tags : DEFAULT_TAGS, owners: parsed.meta?.owners || SEED.meta.owners },
+          });
+        }
+      } catch (e) {
+        // no record yet, start clean
+      }
+      setLoading(false);
+    })();
+  }, []);
+
+  const persist = useCallback(async (next) => {
+    setData(next);
+    setSaving(true);
+    try {
+      await window.storage.set(CORE_KEY, JSON.stringify(next), true);
+      setErr(null);
+    } catch (e) {
+      setErr('Changes did not save. Check your connection and edit the record again.');
+    }
+    setSaving(false);
+  }, []);
+
+  /* ---- mutations ---- */
+  const addNote = (cand, body, kind = 'note') =>
+    [...(cand.notes || []), { id: uid('n'), ts: nowISO(), kind, body }];
+
+  const upsertCandidate = (c) => {
+    const exists = data.candidates.some((x) => x.id === c.id);
+    const next = exists
+      ? data.candidates.map((x) => (x.id === c.id ? { ...c, updatedAt: nowISO() } : x))
+      : [{ ...c, createdAt: nowISO(), updatedAt: nowISO() }, ...data.candidates];
+    persist({ ...data, candidates: next });
+  };
+
+  const patchCandidate = (id, patch, autoNote) => {
+    const next = data.candidates.map((c) => {
+      if (c.id !== id) return c;
+      const updated = { ...c, ...patch, updatedAt: nowISO() };
+      if (autoNote) updated.notes = addNote(c, autoNote, 'system');
+      return updated;
+    });
+    persist({ ...data, candidates: next });
+  };
+
+  const removeCandidate = (id) => persist({ ...data, candidates: data.candidates.filter((c) => c.id !== id) });
+
+  const logTouch = (id) =>
+    patchCandidate(id, { lastContactAt: nowISO() }, 'Contact logged');
+
+  const setStage = (id, stage) => {
+    const c = data.candidates.find((x) => x.id === id);
+    if (!c || c.stage === stage) return;
+    patchCandidate(id, { stage, lastContactAt: nowISO() }, `Stage moved to ${stageOf(stage).label}`);
+  };
+
+  const commitImports = async (items) => {
+    await persist({ ...data, candidates: [...items.map((i) => i.candidate), ...data.candidates] });
+    for (const i of items) {
+      try {
+        if (i.resumeText) await window.storage.set(RESUME_PREFIX + i.candidate.id, i.resumeText, true);
+        if (i.cvFile) await window.storage.set(CVFILE_PREFIX + i.candidate.id, JSON.stringify(i.cvFile), true);
+      } catch (e) {
+        setErr('Some CV files were too large to store. The candidate records were still created.');
+      }
+    }
+    setModal(null);
+    setView('candidates');
+  };
+
+  const upsertSearch = (s) => {
+    const exists = data.searches.some((x) => x.id === s.id);
+    persist({
+      ...data,
+      searches: exists ? data.searches.map((x) => (x.id === s.id ? s : x)) : [s, ...data.searches],
+    });
+  };
+  const upsertClient = (cl) => {
+    const exists = data.clients.some((x) => x.id === cl.id);
+    persist({
+      ...data,
+      clients: exists ? data.clients.map((x) => (x.id === cl.id ? cl : x)) : [cl, ...data.clients],
+    });
+  };
+
+  /* ---- derived ---- */
+  const tags = data.meta.tags;
+  const searchById = useMemo(() => Object.fromEntries(data.searches.map((s) => [s.id, s])), [data.searches]);
+
+  const filtered = useMemo(() => {
+    const needle = q.trim().toLowerCase();
+    return data.candidates.filter((c) => {
+      if (fTag && !(c.functionTags || []).includes(fTag)) return false;
+      if (fSearch && c.searchId !== fSearch) return false;
+      if (fOwner && c.owner !== fOwner) return false;
+      if (!needle) return true;
+      return [c.name, c.title, c.company, c.location, c.source, c.nextStep]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase()
+        .includes(needle);
+    });
+  }, [data.candidates, q, fTag, fSearch, fOwner]);
+
+  const stale = useMemo(
+    () =>
+      filtered
+        .filter((c) => ACTIVE_STAGES.includes(c.stage))
+        .map((c) => ({ ...c, age: daysSince(c.lastContactAt || c.updatedAt) ?? 999 }))
+        .filter((c) => c.age >= 7)
+        .sort((a, b) => b.age - a.age),
+    [filtered]
+  );
+
+  const dueNext = useMemo(() => {
+    const t = new Date();
+    t.setHours(23, 59, 59, 999);
+    const horizon = t.getTime() + 6 * 86400000;
+    return filtered
+      .filter((c) => c.nextStepDate && new Date(c.nextStepDate).getTime() <= horizon && ACTIVE_STAGES.includes(c.stage))
+      .sort((a, b) => new Date(a.nextStepDate) - new Date(b.nextStepDate));
+  }, [filtered]);
+
+  const weekActivity = useMemo(() => {
+    const wk = startOfWeek();
+    const rows = [];
+    data.candidates.forEach((c) =>
+      (c.notes || []).forEach((n) => {
+        if (new Date(n.ts).getTime() >= wk) rows.push({ ...n, cand: c });
+      })
+    );
+    return rows.sort((a, b) => new Date(b.ts) - new Date(a.ts));
+  }, [data.candidates]);
+
+  const exportCSV = () => {
+    const cols = ['Name', 'Title', 'Company', 'Function Tags', 'Search', 'Stage', 'Owner', 'Email', 'Phone', 'LinkedIn', 'Location', 'Current Comp', 'Target Comp', 'Source', 'Resume Link', 'Next Step', 'Next Step Date', 'Last Contact', 'Notes Count'];
+    const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
+    const rows = filtered.map((c) =>
+      [
+        c.name, c.title, c.company, (c.functionTags || []).join('; '),
+        searchById[c.searchId]?.role ? `${searchById[c.searchId].client} - ${searchById[c.searchId].role}` : '',
+        stageOf(c.stage).label, c.owner, c.email, c.phone, c.linkedin, c.location,
+        c.compCurrent, c.compTarget, c.source, c.resumeLink, c.nextStep,
+        c.nextStepDate ? fmtDate(c.nextStepDate) : '', fmtDate(c.lastContactAt || c.updatedAt), (c.notes || []).length,
+      ].map(esc).join(',')
+    );
+    const blob = new Blob([[cols.map(esc).join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `CCP-pipeline-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.click();
+  };
+
+  if (loading) {
+    return (
+      <div className="flex items-center justify-center" style={{ height: 320, background: C.paper }}>
+        <Loader2 size={20} className="animate-spin" style={{ color: C.green }} />
+      </div>
+    );
+  }
+
+  const NAV = [
+    { id: 'week', label: 'This Week', icon: CalendarClock },
+    { id: 'pipeline', label: 'Pipeline', icon: ArrowRight },
+    { id: 'candidates', label: 'Candidates', icon: Users },
+    { id: 'searches', label: 'Searches', icon: Briefcase },
+    { id: 'clients', label: 'Clients', icon: Building2 },
+  ];
+
+  return (
+    <div style={{ background: C.paper, minHeight: '100vh', fontFamily: SANS, color: C.ink }}>
+      {/* ---------- masthead ---------- */}
+      <div style={{ background: C.green, color: '#fff' }}>
+        <div className="flex flex-wrap items-center justify-between gap-3" style={{ padding: '14px 18px 12px' }}>
+          <div className="flex items-center gap-3">
+            <svg width="24" height="24" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M3 15 L9 9 L12 12 L21 3" stroke={C.brass} strokeWidth="2.4" fill="none" strokeLinecap="square" />
+              <path d="M3 21 L9 15 L12 18 L21 9" stroke="#ffffff" strokeWidth="1.6" fill="none" strokeLinecap="square" opacity="0.55" />
+            </svg>
+            <div>
+              <div style={{ fontFamily: SERIF, fontSize: 17, letterSpacing: 0.2, lineHeight: 1.1 }}>Career Capital Partners</div>
+              <div style={{ fontSize: 9.5, letterSpacing: 1.6, textTransform: 'uppercase', color: C.brass, fontWeight: 700, marginTop: 2 }}>
+                Search Ledger
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            {saving ? (
+              <span style={{ fontSize: 11, opacity: 0.7 }}>Saving</span>
+            ) : (
+              <span className="flex items-center gap-1" style={{ fontSize: 11, opacity: 0.6 }}>
+                <Check size={12} /> Saved
+              </span>
+            )}
+            <Btn kind="brass" size="sm" onClick={() => setModal({ type: 'cv' })}>
+              <UploadCloud size={13} /> Import CVs
+            </Btn>
+            <Btn kind="ghost" size="sm" onClick={() => setModal({ type: 'candidate' })}>
+              <Plus size={13} style={{ color: '#fff' }} />
+              <span style={{ color: '#fff' }}>Candidate</span>
+            </Btn>
+            <Btn kind="ghost" size="sm" onClick={() => setModal({ type: 'settings' })}>
+              <Settings size={13} style={{ color: '#fff' }} />
+            </Btn>
+          </div>
+        </div>
+        <div className="flex" style={{ borderTop: `1px solid ${C.greenMid}`, overflowX: 'auto' }}>
+          {NAV.map((n) => {
+            const on = view === n.id;
+            return (
+              <button
+                key={n.id}
+                onClick={() => setView(n.id)}
+                className="flex items-center gap-2"
+                style={{
+                  padding: '10px 16px',
+                  fontSize: 11.5,
+                  fontWeight: 700,
+                  letterSpacing: 0.7,
+                  textTransform: 'uppercase',
+                  color: on ? C.brass : 'rgba(255,255,255,0.6)',
+                  borderBottom: `2px solid ${on ? C.brass : 'transparent'}`,
+                  cursor: 'pointer',
+                  whiteSpace: 'nowrap',
+                }}
+              >
+                <n.icon size={13} /> {n.label}
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {err && (
+        <div className="flex items-center gap-2" style={{ background: '#FBEAE6', color: C.red, padding: '8px 18px', fontSize: 12 }}>
+          <AlertCircle size={14} /> {err}
+        </div>
+      )}
+
+      {/* ---------- filter bar ---------- */}
+      {['pipeline', 'candidates'].includes(view) && (
+        <div className="flex flex-wrap items-center gap-2" style={{ padding: '10px 18px', borderBottom: `1px solid ${C.line}`, background: C.card }}>
+          <div className="flex items-center gap-2" style={{ border: `1px solid ${C.line}`, padding: '5px 8px', background: '#fff', minWidth: 190, flex: '1 1 190px', maxWidth: 300 }}>
+            <SearchIcon size={13} style={{ color: C.mute }} />
+            <input
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search name, title, company"
+              style={{ border: 'none', outline: 'none', fontSize: 12.5, width: '100%', fontFamily: SANS }}
+            />
+          </div>
+          <Select value={fTag} onChange={(e) => setFTag(e.target.value)} style={{ width: 'auto', minWidth: 150 }}>
+            <option value="">All functions</option>
+            {tags.map((t) => <option key={t} value={t}>{t}</option>)}
+          </Select>
+          <Select value={fSearch} onChange={(e) => setFSearch(e.target.value)} style={{ width: 'auto', minWidth: 150 }}>
+            <option value="">All searches</option>
+            {data.searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+          </Select>
+          <Select value={fOwner} onChange={(e) => setFOwner(e.target.value)} style={{ width: 'auto', minWidth: 120 }}>
+            <option value="">All owners</option>
+            {data.meta.owners.map((o) => <option key={o} value={o}>{o}</option>)}
+          </Select>
+          <span style={{ fontSize: 11.5, color: C.mute, marginLeft: 'auto' }}>{filtered.length} shown</span>
+          <Btn kind="ghost" size="sm" onClick={exportCSV}><Download size={12} /> CSV</Btn>
+        </div>
+      )}
+
+      <div style={{ padding: 18 }}>
+        {view === 'week' && (
+          <WeekView
+            stale={stale} dueNext={dueNext} activity={weekActivity}
+            searches={data.searches} candidates={data.candidates} tags={tags}
+            onOpen={setOpen} onTouch={logTouch} onAdd={() => setModal({ type: 'candidate' })}
+          />
+        )}
+        {view === 'pipeline' && (
+          <PipelineView rows={filtered} tags={tags} onOpen={setOpen} onStage={setStage} onAdd={() => setModal({ type: 'candidate' })} />
+        )}
+        {view === 'candidates' && (
+          <CandidatesTable rows={filtered} tags={tags} searchById={searchById} onOpen={setOpen} onStage={setStage} onTouch={logTouch}
+            onAdd={() => setModal({ type: 'candidate' })} onBulk={() => setModal({ type: 'bulk' })}
+            onCV={() => setModal({ type: 'cv' })} />
+        )}
+        {view === 'searches' && (
+          <SearchesView searches={data.searches} candidates={data.candidates} tags={tags}
+            onAdd={() => setModal({ type: 'search' })} onEdit={(s) => setModal({ type: 'search', payload: s })}
+            onJump={(id) => { setFSearch(id); setView('pipeline'); }} />
+        )}
+        {view === 'clients' && (
+          <ClientsView clients={data.clients} onAdd={() => setModal({ type: 'client' })} onEdit={(c) => setModal({ type: 'client', payload: c })} />
+        )}
+      </div>
+
+      <div style={{ padding: '14px 18px', borderTop: `1px solid ${C.line}`, fontSize: 10.5, color: C.mute, letterSpacing: 0.4 }}>
+        CAREER CAPITAL PARTNERS | Private &amp; Confidential | Records are shared with everyone who has access to this tool
+      </div>
+
+      {/* ---------- modals ---------- */}
+      {modal?.type === 'candidate' && (
+        <CandidateForm
+          tags={tags} searches={data.searches} owners={data.meta.owners}
+          onClose={() => setModal(null)}
+          onSave={(c) => { upsertCandidate(c); setModal(null); }}
+        />
+      )}
+      {modal?.type === 'search' && (
+        <SearchForm record={modal.payload} tags={tags} clients={data.clients} owners={data.meta.owners}
+          onClose={() => setModal(null)} onSave={(s) => { upsertSearch(s); setModal(null); }} />
+      )}
+      {modal?.type === 'client' && (
+        <ClientForm record={modal.payload} onClose={() => setModal(null)} onSave={(c) => { upsertClient(c); setModal(null); }} />
+      )}
+      {modal?.type === 'bulk' && (
+        <BulkAdd tags={tags} searches={data.searches} owners={data.meta.owners}
+          onClose={() => setModal(null)}
+          onSave={(list) => { persist({ ...data, candidates: [...list, ...data.candidates] }); setModal(null); }} />
+      )}
+      {modal?.type === 'cv' && (
+        <CVImport tags={tags} searches={data.searches} owners={data.meta.owners}
+          onClose={() => setModal(null)} onCommit={commitImports} />
+      )}
+      {modal?.type === 'settings' && (
+        <SettingsForm meta={data.meta} onClose={() => setModal(null)}
+          onSave={(meta) => { persist({ ...data, meta }); setModal(null); }} />
+      )}
+
+      {open && (
+        <CandidateDrawer
+          candidate={data.candidates.find((c) => c.id === open)}
+          tags={tags} searches={data.searches} owners={data.meta.owners}
+          onClose={() => setOpen(null)}
+          onPatch={patchCandidate}
+          onStage={setStage}
+          onDelete={(id) => { removeCandidate(id); setOpen(null); }}
+        />
+      )}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: THIS WEEK
+   ============================================================ */
+function WeekView({ stale, dueNext, activity, searches, candidates, tags, onOpen, onTouch, onAdd }) {
+  const active = candidates.filter((c) => ACTIVE_STAGES.includes(c.stage));
+  const submitted = candidates.filter((c) => ['submitted', 'interview', 'finalist', 'offer'].includes(c.stage));
+  const placed = candidates.filter((c) => c.stage === 'placed');
+  const openSearches = searches.filter((s) => s.status === 'Active');
+
+  const stats = [
+    { n: openSearches.length, l: 'Active searches' },
+    { n: active.length, l: 'Live candidates' },
+    { n: submitted.length, l: 'With client' },
+    { n: stale.length, l: 'Needs a touch', warn: stale.length > 0 },
+    { n: placed.length, l: 'Placed' },
+  ];
+
+  if (!candidates.length && !searches.length) {
+    return (
+      <Empty
+        icon={Briefcase}
+        title="Start the ledger"
+        hint="Add your first search under Searches, then log candidates against it. Every candidate carries function tags, a stage, notes, and a resume link."
+        action={<Btn onClick={onAdd}><Plus size={13} /> Add a candidate</Btn>}
+      />
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(130px, 1fr))' }}>
+        {stats.map((s) => (
+          <div key={s.l} style={{ background: C.card, border: `1px solid ${C.line}`, borderTop: `3px solid ${s.warn ? C.brass : C.green}`, padding: '13px 14px' }}>
+            <div style={{ fontFamily: SERIF, fontSize: 30, lineHeight: 1, color: s.warn ? C.brass : C.green }}>{s.n}</div>
+            <div style={{ fontSize: 10.5, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, marginTop: 6, fontWeight: 700 }}>{s.l}</div>
+          </div>
+        ))}
+      </div>
+
+      <div className="grid gap-4" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))' }}>
+        {/* aging */}
+        <Panel title="Aging" note="No contact in 7+ days">
+          {stale.length === 0 ? (
+            <Quiet>Every live candidate has been touched this week.</Quiet>
+          ) : (
+            stale.slice(0, 12).map((c) => (
+              <Row key={c.id} onClick={() => onOpen(c.id)}>
+                <div className="flex-1" style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: C.mute }}>{c.title || 'No title'} · {stageOf(c.stage).label}</div>
+                </div>
+                <span style={{ fontFamily: SERIF, fontSize: 15, color: c.age >= 21 ? C.red : c.age >= 14 ? C.brass : C.mute, minWidth: 42, textAlign: 'right' }}>
+                  {c.age}d
+                </span>
+                <Btn size="sm" kind="ghost" onClick={(e) => { e.stopPropagation(); onTouch(c.id); }}>Touch</Btn>
+              </Row>
+            ))
+          )}
+        </Panel>
+
+        {/* next steps */}
+        <Panel title="Next steps" note="Due in the next 7 days">
+          {dueNext.length === 0 ? (
+            <Quiet>Nothing scheduled. Open a candidate to set a next step.</Quiet>
+          ) : (
+            dueNext.slice(0, 12).map((c) => (
+              <Row key={c.id} onClick={() => onOpen(c.id)}>
+                <div className="flex-1" style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: C.mute }}>{c.nextStep || 'Next step not written'}</div>
+                </div>
+                <span style={{ fontSize: 11, color: C.brass, fontWeight: 700 }}>{fmtDate(c.nextStepDate)}</span>
+              </Row>
+            ))
+          )}
+        </Panel>
+
+        {/* activity */}
+        <Panel title="Logged this week" note={`${activity.length} entries since Monday`}>
+          {activity.length === 0 ? (
+            <Quiet>No notes or stage moves yet this week.</Quiet>
+          ) : (
+            activity.slice(0, 18).map((a) => (
+              <Row key={a.id} onClick={() => onOpen(a.cand.id)}>
+                <div className="flex-1" style={{ minWidth: 0 }}>
+                  <div style={{ fontSize: 12.5 }}>
+                    <span style={{ fontWeight: 600 }}>{a.cand.name}</span>
+                    <span style={{ color: C.mute }}> · {a.body}</span>
+                  </div>
+                </div>
+                <span style={{ fontSize: 10.5, color: C.mute }}>{fmtDate(a.ts)}</span>
+              </Row>
+            ))
+          )}
+        </Panel>
+
+        {/* search depth */}
+        <Panel title="Search depth" note="Live candidates per engagement">
+          {searches.length === 0 ? (
+            <Quiet>Add a search to track pipeline depth against it.</Quiet>
+          ) : (
+            searches.filter((s) => s.status !== 'Closed').map((s) => {
+              const mine = candidates.filter((c) => c.searchId === s.id);
+              const live = mine.filter((c) => ACTIVE_STAGES.includes(c.stage)).length;
+              const sub = mine.filter((c) => ['submitted', 'interview', 'finalist', 'offer'].includes(c.stage)).length;
+              const pct = Math.min(100, (live / 12) * 100);
+              return (
+                <div key={s.id} style={{ padding: '9px 0', borderBottom: `1px solid ${C.lineSoft}` }}>
+                  <div className="flex items-baseline justify-between gap-2">
+                    <div style={{ fontSize: 12.5, fontWeight: 600 }}>{s.client}</div>
+                    <div style={{ fontSize: 11, color: C.mute }}>{live} live · {sub} with client</div>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.mute, marginBottom: 5 }}>{s.role}</div>
+                  <div style={{ height: 5, background: C.lineSoft }}>
+                    <div style={{ height: 5, width: `${pct}%`, background: pct >= 66 ? C.green : pct >= 33 ? C.brass : C.red }} />
+                  </div>
+                </div>
+              );
+            })
+          )}
+        </Panel>
+      </div>
+    </div>
+  );
+}
+
+function Panel({ title, note, children }) {
+  return (
+    <div style={{ background: C.card, border: `1px solid ${C.line}` }}>
+      <div style={{ padding: '11px 14px', borderBottom: `1px solid ${C.line}` }}>
+        <div style={{ fontFamily: SERIF, fontSize: 15, color: C.green }}>{title}</div>
+        {note && <div style={{ fontSize: 10.5, color: C.mute, letterSpacing: 0.4, marginTop: 2 }}>{note}</div>}
+      </div>
+      <div style={{ padding: '4px 14px 10px', maxHeight: 330, overflowY: 'auto' }}>{children}</div>
+    </div>
+  );
+}
+function Row({ children, onClick }) {
+  return (
+    <div onClick={onClick} className="flex items-center gap-3" style={{ padding: '9px 0', borderBottom: `1px solid ${C.lineSoft}`, cursor: 'pointer' }}>
+      {children}
+    </div>
+  );
+}
+function Quiet({ children }) {
+  return <div style={{ fontSize: 12, color: C.mute, padding: '14px 0', lineHeight: 1.6 }}>{children}</div>;
+}
+
+/* ============================================================
+   VIEW: PIPELINE (columns by stage)
+   ============================================================ */
+function PipelineView({ rows, tags, onOpen, onStage, onAdd }) {
+  if (!rows.length) {
+    return <Empty icon={Users} title="No candidates match" hint="Clear the filters above, or add someone new to the pipeline." action={<Btn onClick={onAdd}><Plus size={13} /> Add a candidate</Btn>} />;
+  }
+  return (
+    <div className="flex gap-3" style={{ overflowX: 'auto', paddingBottom: 8 }}>
+      {STAGES.map((st) => {
+        const col = rows.filter((c) => c.stage === st.id);
+        return (
+          <div key={st.id} style={{ minWidth: 232, width: 232, flexShrink: 0 }}>
+            <div className="flex items-center justify-between" style={{ padding: '7px 9px', background: C.card, border: `1px solid ${C.line}`, borderTop: `3px solid ${st.color}` }}>
+              <span style={{ fontSize: 10.5, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', color: st.color }}>{st.label}</span>
+              <span style={{ fontFamily: SERIF, fontSize: 14, color: C.mute }}>{col.length}</span>
+            </div>
+            <div className="flex flex-col gap-2" style={{ marginTop: 8 }}>
+              {col.map((c) => (
+                <div key={c.id} onClick={() => onOpen(c.id)} style={{ background: C.card, border: `1px solid ${C.line}`, padding: 10, cursor: 'pointer' }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, lineHeight: 1.25 }}>{c.name}</div>
+                  <div style={{ fontSize: 11, color: C.mute, marginTop: 2 }}>{c.title}</div>
+                  <div style={{ fontSize: 11, color: C.mute }}>{c.company}</div>
+                  <div className="flex flex-wrap gap-1" style={{ marginTop: 7 }}>
+                    {(c.functionTags || []).slice(0, 2).map((t) => (
+                      <Pill key={t} color={tagColor(tags, t)}>{t}</Pill>
+                    ))}
+                  </div>
+                  <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
+                    <span style={{ fontSize: 10, color: C.mute }}>{daysSince(c.lastContactAt || c.updatedAt) ?? 0}d since contact</span>
+                    <select
+                      value={c.stage}
+                      onClick={(e) => e.stopPropagation()}
+                      onChange={(e) => onStage(c.id, e.target.value)}
+                      style={{ fontSize: 10, border: `1px solid ${C.line}`, borderRadius: 2, padding: '1px 2px', color: C.mute, background: '#fff' }}
+                    >
+                      {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+                    </select>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: CANDIDATE TABLE
+   ============================================================ */
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV }) {
+  const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
+  const sorted = useMemo(() => {
+    const v = (c) => {
+      if (sort.key === 'age') return daysSince(c.lastContactAt || c.updatedAt) ?? 0;
+      if (sort.key === 'stage') return STAGES.findIndex((s) => s.id === c.stage);
+      return (c[sort.key] || '').toString().toLowerCase();
+    };
+    return [...rows].sort((a, b) => (v(a) > v(b) ? sort.dir : v(a) < v(b) ? -sort.dir : 0));
+  }, [rows, sort]);
+
+  const H = ({ k, children, w }) => (
+    <th
+      onClick={() => setSort((s) => ({ key: k, dir: s.key === k ? -s.dir : 1 }))}
+      style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 800, cursor: 'pointer', width: w, whiteSpace: 'nowrap' }}
+    >
+      {children}
+    </th>
+  );
+
+  if (!rows.length) {
+    return (
+      <div>
+        <Empty icon={Users} title="No candidates match" hint="Clear the filters, or drop a stack of CVs below and let them fill themselves in."
+          action={<div className="flex gap-2"><Btn onClick={onAdd}><Plus size={13} /> Add candidate</Btn><Btn kind="ghost" onClick={onBulk}><Upload size={13} /> Paste a list</Btn></div>} />
+        <div style={{ maxWidth: 520, margin: '0 auto' }}>
+          <Dropzone onFiles={() => onCV()} label="Drop CVs here" hint="PDF, DOCX, TXT, or a photo. Names, titles, contact details, and function tags are read straight off the document." />
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div>
+      <div className="flex justify-end gap-2" style={{ marginBottom: 10 }}>
+        <Btn kind="ghost" size="sm" onClick={onBulk}><Upload size={12} /> Paste a list</Btn>
+        <Btn kind="ghost" size="sm" onClick={onCV}><UploadCloud size={12} /> Import CVs</Btn>
+        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add candidate</Btn>
+      </div>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 880 }}>
+          <thead style={{ background: C.greenSoft, borderBottom: `1px solid ${C.line}` }}>
+            <tr>
+              <H k="name">Candidate</H>
+              <H k="company">Company</H>
+              <H k="functionTags">Function</H>
+              <H k="searchId">Search</H>
+              <H k="stage" w={150}>Stage</H>
+              <H k="owner">Owner</H>
+              <H k="age" w={70}>Aging</H>
+              <th style={{ width: 70 }} />
+            </tr>
+          </thead>
+          <tbody>
+            {sorted.map((c) => {
+              const age = daysSince(c.lastContactAt || c.updatedAt) ?? 0;
+              const s = searchById[c.searchId];
+              return (
+                <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                  <td style={{ padding: '9px 10px', cursor: 'pointer' }} onClick={() => onOpen(c.id)}>
+                    <div style={{ fontSize: 13, fontWeight: 700 }}>{c.name}</div>
+                    <div style={{ fontSize: 11, color: C.mute }}>{c.title}</div>
+                  </td>
+                  <td style={{ padding: '9px 10px', fontSize: 12 }}>{c.company || '-'}</td>
+                  <td style={{ padding: '9px 10px' }}>
+                    <div className="flex flex-wrap gap-1">
+                      {(c.functionTags || []).map((t) => <Pill key={t} color={tagColor(tags, t)}>{t}</Pill>)}
+                    </div>
+                  </td>
+                  <td style={{ padding: '9px 10px', fontSize: 11.5, color: C.mute }}>{s ? `${s.client} · ${s.role}` : '-'}</td>
+                  <td style={{ padding: '9px 10px' }}>
+                    <select value={c.stage} onChange={(e) => onStage(c.id, e.target.value)}
+                      style={{ fontSize: 11.5, padding: '4px 5px', border: `1px solid ${C.line}`, background: '#fff', color: stageOf(c.stage).color, fontWeight: 700, width: '100%' }}>
+                      {STAGES.map((st) => <option key={st.id} value={st.id}>{st.label}</option>)}
+                    </select>
+                  </td>
+                  <td style={{ padding: '9px 10px', fontSize: 11.5 }}>{c.owner || '-'}</td>
+                  <td style={{ padding: '9px 10px', fontFamily: SERIF, fontSize: 14, color: age >= 21 ? C.red : age >= 7 ? C.brass : C.mute }}>{age}d</td>
+                  <td style={{ padding: '9px 10px' }}>
+                    <Btn size="sm" kind="ghost" onClick={() => onTouch(c.id)}>Touch</Btn>
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: SEARCHES
+   ============================================================ */
+function SearchesView({ searches, candidates, tags, onAdd, onEdit, onJump }) {
+  if (!searches.length) {
+    return <Empty icon={Briefcase} title="No searches yet" hint="A search is one client mandate: company, role, function, owner, and target close date. Candidates get logged against it."
+      action={<Btn onClick={onAdd}><Plus size={13} /> Add a search</Btn>} />;
+  }
+  return (
+    <div>
+      <div className="flex justify-end" style={{ marginBottom: 10 }}>
+        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add search</Btn>
+      </div>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(280px, 1fr))' }}>
+        {searches.map((s) => {
+          const mine = candidates.filter((c) => c.searchId === s.id);
+          const statusColor = s.status === 'Active' ? C.green : s.status === 'On Hold' ? C.brass : s.status === 'Business Development' ? '#3F6C8A' : C.mute;
+          return (
+            <div key={s.id} style={{ background: C.card, border: `1px solid ${C.line}`, borderLeft: `3px solid ${statusColor}`, padding: 14 }}>
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <div style={{ fontFamily: SERIF, fontSize: 16, color: C.green, lineHeight: 1.2 }}>{s.role}</div>
+                  <div style={{ fontSize: 12, color: C.mute, marginTop: 2 }}>{s.client}</div>
+                </div>
+                <Pill color={statusColor} filled>{s.status}</Pill>
+              </div>
+              <div className="flex flex-wrap gap-1" style={{ marginTop: 9 }}>
+                {(s.functionTags || []).map((t) => <Pill key={t} color={tagColor(tags, t)}>{t}</Pill>)}
+              </div>
+              <div className="grid" style={{ gridTemplateColumns: '1fr 1fr', gap: 8, marginTop: 12, fontSize: 11.5 }}>
+                <Meta k="Owner" v={s.owner} />
+                <Meta k="Opened" v={fmtDate(s.startDate)} />
+                <Meta k="Target close" v={fmtDate(s.targetDate)} />
+                <Meta k="Fee" v={s.fee} />
+              </div>
+              {s.notes && <div style={{ fontSize: 11.5, color: C.mute, marginTop: 10, lineHeight: 1.55 }}>{s.notes}</div>}
+              <div className="flex items-center justify-between" style={{ marginTop: 12, paddingTop: 10, borderTop: `1px solid ${C.lineSoft}` }}>
+                <span style={{ fontSize: 11.5 }}>
+                  <strong style={{ fontFamily: SERIF, fontSize: 15, color: C.brass }}>{mine.length}</strong>
+                  <span style={{ color: C.mute }}> candidates</span>
+                </span>
+                <div className="flex gap-2">
+                  <Btn size="sm" kind="ghost" onClick={() => onEdit(s)}>Edit</Btn>
+                  <Btn size="sm" onClick={() => onJump(s.id)}>Open pipeline</Btn>
+                </div>
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+function Meta({ k, v }) {
+  return (
+    <div>
+      <div style={{ fontSize: 9.5, letterSpacing: 0.7, textTransform: 'uppercase', color: C.mute, fontWeight: 700 }}>{k}</div>
+      <div style={{ fontSize: 12 }}>{v || '-'}</div>
+    </div>
+  );
+}
+
+/* ============================================================
+   VIEW: CLIENTS
+   ============================================================ */
+function ClientsView({ clients, onAdd, onEdit }) {
+  if (!clients.length) {
+    return <Empty icon={Building2} title="No clients yet" hint="Track sponsors, portfolio companies, and direct clients here, with the contact you actually deal with."
+      action={<Btn onClick={onAdd}><Plus size={13} /> Add a client</Btn>} />;
+  }
+  return (
+    <div>
+      <div className="flex justify-end" style={{ marginBottom: 10 }}>
+        <Btn size="sm" onClick={onAdd}><Plus size={12} /> Add client</Btn>
+      </div>
+      <div style={{ background: C.card, border: `1px solid ${C.line}`, overflowX: 'auto' }}>
+        <table style={{ width: '100%', borderCollapse: 'collapse', minWidth: 700 }}>
+          <thead style={{ background: C.greenSoft, borderBottom: `1px solid ${C.line}` }}>
+            <tr>
+              {['Client', 'Type', 'Contact', 'Email', 'Status', ''].map((h, i) => (
+                <th key={i} style={{ textAlign: 'left', padding: '9px 10px', fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 800 }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {clients.map((c) => (
+              <tr key={c.id} style={{ borderBottom: `1px solid ${C.lineSoft}` }}>
+                <td style={{ padding: '9px 10px', fontSize: 13, fontWeight: 700 }}>{c.name}</td>
+                <td style={{ padding: '9px 10px', fontSize: 12, color: C.mute }}>{c.type}</td>
+                <td style={{ padding: '9px 10px', fontSize: 12 }}>{c.contactName}<div style={{ fontSize: 11, color: C.mute }}>{c.contactTitle}</div></td>
+                <td style={{ padding: '9px 10px', fontSize: 12 }}>{c.email || '-'}</td>
+                <td style={{ padding: '9px 10px' }}>
+                  <Pill color={c.status === 'Active' ? C.green : c.status === 'Prospect' ? C.brass : C.mute}>{c.status}</Pill>
+                </td>
+                <td style={{ padding: '9px 10px' }}><Btn size="sm" kind="ghost" onClick={() => onEdit(c)}>Edit</Btn></td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   CANDIDATE DRAWER
+   ============================================================ */
+function CandidateDrawer({ candidate, tags, searches, owners, onClose, onPatch, onStage, onDelete }) {
+  const [note, setNote] = useState('');
+  const [resume, setResume] = useState('');
+  const [resumeLoaded, setResumeLoaded] = useState(false);
+  const [resumeSaving, setResumeSaving] = useState(false);
+  const [tab, setTab] = useState('notes');
+  const [confirmDel, setConfirmDel] = useState(false);
+  const [cvFile, setCvFile] = useState(null);
+  const [cvStatus, setCvStatus] = useState(null);
+
+  useEffect(() => {
+    let live = true;
+    setCvFile(null);
+    if (!candidate?.hasCvFile) return;
+    (async () => {
+      try {
+        const r = await window.storage.get(CVFILE_PREFIX + candidate.id, true);
+        if (live && r?.value) setCvFile(JSON.parse(r.value));
+      } catch (e) { /* nothing attached */ }
+    })();
+    return () => { live = false; };
+  }, [candidate?.id, candidate?.hasCvFile]);
+
+  const attachCV = async (files) => {
+    const file = files[0];
+    if (!file) return;
+    setCvStatus({ kind: 'busy', msg: `Reading ${file.name}` });
+    try {
+      const p = await parseCV(file, tags);
+      const text = buildResumeText(p);
+      setResume(text);
+      await window.storage.set(RESUME_PREFIX + candidate.id, text, true);
+
+      const packed = await packCVFile(file).catch(() => null);
+      if (packed) await window.storage.set(CVFILE_PREFIX + candidate.id, JSON.stringify(packed), true);
+      setCvFile(packed);
+
+      // fill only what is currently blank, never overwrite the recruiter's own entries
+      const patch = { hasResumeText: true, hasCvFile: !!packed, cvFileName: packed ? file.name : '' };
+      ['name', 'title', 'company', 'email', 'phone', 'linkedin', 'location', 'seniority', 'compCurrent'].forEach((k) => {
+        if (!candidate[k] && p[k]) patch[k] = p[k];
+      });
+      const merged = Array.from(new Set([...(candidate.functionTags || []), ...(p.functionTags || [])]));
+      if (merged.length) patch.functionTags = merged;
+
+      const newNotes = [...(candidate.notes || [])];
+      if (p.summary) newNotes.push({ id: uid('n'), ts: nowISO(), kind: 'note', body: p.summary });
+      if (p.highlights?.length) newNotes.push({ id: uid('n'), ts: nowISO(), kind: 'note', body: p.highlights.map((h) => `- ${h}`).join('\n') });
+      newNotes.push({ id: uid('n'), ts: nowISO(), kind: 'system', body: `CV attached: ${file.name}` });
+      patch.notes = newNotes;
+
+      onPatch(candidate.id, patch);
+      setCvStatus({ kind: 'ok', msg: packed ? 'CV read and attached.' : 'CV read. The file was too large to store, so only the text was kept.' });
+    } catch (e) {
+      setCvStatus({ kind: 'error', msg: e.message || 'That CV could not be read.' });
+    }
+  };
+
+  useEffect(() => {
+    let live = true;
+    setResumeLoaded(false);
+    (async () => {
+      let text = '';
+      try {
+        const r = await window.storage.get(RESUME_PREFIX + candidate.id, true);
+        text = r?.value || '';
+      } catch (e) { text = ''; }
+      if (live) { setResume(text); setResumeLoaded(true); }
+    })();
+    return () => { live = false; };
+  }, [candidate?.id]);
+
+  if (!candidate) return null;
+  const c = candidate;
+
+  const saveResume = async () => {
+    setResumeSaving(true);
+    try {
+      await window.storage.set(RESUME_PREFIX + c.id, resume, true);
+      onPatch(c.id, { hasResumeText: resume.trim().length > 0 }, 'Resume text saved');
+    } catch (e) { /* surfaced by the button state */ }
+    setResumeSaving(false);
+  };
+
+  const postNote = () => {
+    if (!note.trim()) return;
+    onPatch(c.id, { lastContactAt: nowISO(), notes: [...(c.notes || []), { id: uid('n'), ts: nowISO(), kind: 'note', body: note.trim() }] });
+    setNote('');
+  };
+
+  const toggleTag = (t) => {
+    const cur = c.functionTags || [];
+    onPatch(c.id, { functionTags: cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t] });
+  };
+
+  const age = daysSince(c.lastContactAt || c.updatedAt) ?? 0;
+
+  return (
+    <div className="fixed inset-0 flex justify-end" style={{ background: 'rgba(14,36,54,0.45)', zIndex: 60 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} className="w-full flex flex-col"
+        style={{ maxWidth: 520, background: C.paper, height: '100%', overflowY: 'auto' }}>
+        {/* head */}
+        <div style={{ background: C.green, color: '#fff', padding: '16px 18px' }}>
+          <div className="flex items-start justify-between gap-3">
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontFamily: SERIF, fontSize: 21, lineHeight: 1.15 }}>{c.name}</div>
+              <div style={{ fontSize: 12.5, opacity: 0.8, marginTop: 3 }}>{c.title}{c.company ? ` · ${c.company}` : ''}</div>
+              <div style={{ fontSize: 11.5, opacity: 0.6 }}>{c.location}</div>
+            </div>
+            <button onClick={onClose} style={{ color: '#fff', cursor: 'pointer' }}><X size={18} /></button>
+          </div>
+          <div className="flex flex-wrap items-center gap-2" style={{ marginTop: 12 }}>
+            <select value={c.stage} onChange={(e) => onStage(c.id, e.target.value)}
+              style={{ fontSize: 11.5, fontWeight: 700, padding: '5px 7px', background: C.brass, color: '#fff', border: 'none' }}>
+              {STAGES.map((s) => <option key={s.id} value={s.id} style={{ color: C.ink }}>{s.label}</option>)}
+            </select>
+            <span style={{ fontSize: 11, opacity: 0.7 }}>Last contact {fmtDate(c.lastContactAt || c.updatedAt)} · {age}d</span>
+            <Btn size="sm" kind="brass" onClick={() => onPatch(c.id, { lastContactAt: nowISO() }, 'Contact logged')}>Log contact</Btn>
+          </div>
+        </div>
+
+        {/* contact strip */}
+        <div className="flex flex-wrap gap-3" style={{ padding: '10px 18px', background: C.card, borderBottom: `1px solid ${C.line}`, fontSize: 11.5 }}>
+          {c.email && <a href={`mailto:${c.email}`} className="flex items-center gap-1" style={{ color: C.green }}><Mail size={12} /> {c.email}</a>}
+          {c.phone && <span className="flex items-center gap-1" style={{ color: C.mute }}><Phone size={12} /> {c.phone}</span>}
+          {c.linkedin && <a href={c.linkedin} target="_blank" rel="noreferrer" className="flex items-center gap-1" style={{ color: C.green }}><Linkedin size={12} /> LinkedIn</a>}
+          {!c.email && !c.phone && !c.linkedin && <span style={{ color: C.mute }}>No contact details yet. Add them under Details.</span>}
+        </div>
+
+        {/* tags */}
+        <div style={{ padding: '12px 18px', background: C.card, borderBottom: `1px solid ${C.line}` }}>
+          <div style={{ fontSize: 9.5, letterSpacing: 0.9, textTransform: 'uppercase', color: C.mute, fontWeight: 800, marginBottom: 7 }}>Function tags</div>
+          <div className="flex flex-wrap gap-1.5">
+            {tags.map((t) => {
+              const on = (c.functionTags || []).includes(t);
+              return <Pill key={t} color={tagColor(tags, t)} filled={on} onClick={() => toggleTag(t)}>{t}</Pill>;
+            })}
+          </div>
+        </div>
+
+        {/* tabs */}
+        <div className="flex" style={{ background: C.card, borderBottom: `1px solid ${C.line}` }}>
+          {[{ id: 'notes', l: 'Notes' }, { id: 'resume', l: 'Resume' }, { id: 'details', l: 'Details' }].map((t) => (
+            <button key={t.id} onClick={() => setTab(t.id)}
+              style={{ padding: '9px 15px', fontSize: 11, fontWeight: 800, letterSpacing: 0.7, textTransform: 'uppercase', cursor: 'pointer',
+                color: tab === t.id ? C.green : C.mute, borderBottom: `2px solid ${tab === t.id ? C.brass : 'transparent'}` }}>
+              {t.l}
+            </button>
+          ))}
+        </div>
+
+        <div style={{ padding: 18, flex: 1 }}>
+          {tab === 'notes' && (
+            <div>
+              <TextArea rows={3} value={note} onChange={(e) => setNote(e.target.value)} placeholder="What happened on this candidate?" />
+              <div className="flex justify-end" style={{ marginTop: 8 }}>
+                <Btn size="sm" onClick={postNote} disabled={!note.trim()}>Add note</Btn>
+              </div>
+              <div style={{ marginTop: 16 }}>
+                {(c.notes || []).length === 0 && <Quiet>No notes on this candidate yet.</Quiet>}
+                {[...(c.notes || [])].reverse().map((n) => (
+                  <div key={n.id} style={{ padding: '10px 0', borderBottom: `1px solid ${C.lineSoft}` }}>
+                    <div className="flex items-center gap-2" style={{ marginBottom: 3 }}>
+                      <Circle size={6} style={{ color: n.kind === 'system' ? C.mute : C.brass, fill: n.kind === 'system' ? C.mute : C.brass }} />
+                      <span style={{ fontSize: 10.5, color: C.mute, letterSpacing: 0.4 }}>
+                        {new Date(n.ts).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' })}
+                      </span>
+                    </div>
+                    <div style={{ fontSize: 12.5, lineHeight: 1.6, color: n.kind === 'system' ? C.mute : C.ink, fontStyle: n.kind === 'system' ? 'italic' : 'normal' }}>{n.body}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {tab === 'resume' && (
+            <div className="flex flex-col gap-3">
+              <Dropzone
+                multiple={false}
+                compact
+                onFiles={attachCV}
+                label={cvFile ? 'Drop a newer CV to replace' : 'Drop a CV to fill this record'}
+                hint="Blank fields are filled from the document. Anything you already typed stays as it is."
+              />
+              {cvStatus && (
+                <div className="flex items-center gap-2" style={{ fontSize: 11.5, color: cvStatus.kind === 'error' ? C.red : cvStatus.kind === 'busy' ? C.brass : C.green }}>
+                  {cvStatus.kind === 'busy' ? <Loader2 size={12} className="animate-spin" /> : cvStatus.kind === 'error' ? <AlertCircle size={12} /> : <Check size={12} />}
+                  {cvStatus.msg}
+                </div>
+              )}
+              {cvFile && (
+                <div className="flex items-center justify-between gap-2" style={{ border: `1px solid ${C.line}`, background: C.card, padding: '9px 11px' }}>
+                  <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+                    <Paperclip size={13} style={{ color: C.brass, flexShrink: 0 }} />
+                    <span style={{ fontSize: 12, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{cvFile.name}</span>
+                  </div>
+                  <Btn size="sm" kind="ghost" onClick={() => downloadCVFile(cvFile)}><Download size={12} /> Download</Btn>
+                </div>
+              )}
+              <Field label="Resume link (Drive, Dropbox, LinkedIn PDF)">
+                <TextInput value={c.resumeLink || ''} onChange={(e) => onPatch(c.id, { resumeLink: e.target.value })} placeholder="https://" />
+              </Field>
+              {c.resumeLink && (
+                <a href={c.resumeLink} target="_blank" rel="noreferrer" className="flex items-center gap-1" style={{ fontSize: 12, color: C.green, fontWeight: 600 }}>
+                  <ExternalLink size={12} /> Open resume
+                </a>
+              )}
+              <Field label="Resume text (paste the full document to keep it searchable)">
+                {resumeLoaded ? (
+                  <TextArea rows={14} value={resume} onChange={(e) => setResume(e.target.value)} placeholder="Paste resume contents here" style={{ fontSize: 12 }} />
+                ) : (
+                  <div style={{ fontSize: 12, color: C.mute, padding: 10 }}>Loading</div>
+                )}
+              </Field>
+              <div className="flex items-center justify-between">
+                <span style={{ fontSize: 11, color: C.mute }}>{resume.length.toLocaleString()} characters</span>
+                <Btn size="sm" onClick={saveResume} disabled={!resumeLoaded || resumeSaving}>
+                  {resumeSaving ? <Loader2 size={12} className="animate-spin" /> : <FileText size={12} />} Save resume
+                </Btn>
+              </div>
+            </div>
+          )}
+
+          {tab === 'details' && (
+            <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
+              <Field label="Name" span={2}><TextInput value={c.name || ''} onChange={(e) => onPatch(c.id, { name: e.target.value })} /></Field>
+              <Field label="Title"><TextInput value={c.title || ''} onChange={(e) => onPatch(c.id, { title: e.target.value })} /></Field>
+              <Field label="Company"><TextInput value={c.company || ''} onChange={(e) => onPatch(c.id, { company: e.target.value })} /></Field>
+              <Field label="Email"><TextInput value={c.email || ''} onChange={(e) => onPatch(c.id, { email: e.target.value })} /></Field>
+              <Field label="Phone"><TextInput value={c.phone || ''} onChange={(e) => onPatch(c.id, { phone: e.target.value })} /></Field>
+              <Field label="LinkedIn" span={2}><TextInput value={c.linkedin || ''} onChange={(e) => onPatch(c.id, { linkedin: e.target.value })} /></Field>
+              <Field label="Location"><TextInput value={c.location || ''} onChange={(e) => onPatch(c.id, { location: e.target.value })} /></Field>
+              <Field label="Source"><TextInput value={c.source || ''} onChange={(e) => onPatch(c.id, { source: e.target.value })} placeholder="Referral, LinkedIn, inbound" /></Field>
+              <Field label="Search">
+                <Select value={c.searchId || ''} onChange={(e) => onPatch(c.id, { searchId: e.target.value })}>
+                  <option value="">Unassigned</option>
+                  {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+                </Select>
+              </Field>
+              <Field label="Owner">
+                <Select value={c.owner || ''} onChange={(e) => onPatch(c.id, { owner: e.target.value })}>
+                  <option value="">Unassigned</option>
+                  {owners.map((o) => <option key={o} value={o}>{o}</option>)}
+                </Select>
+              </Field>
+              <Field label="Current comp"><TextInput value={c.compCurrent || ''} onChange={(e) => onPatch(c.id, { compCurrent: e.target.value })} placeholder="$250K + 30%" /></Field>
+              <Field label="Target comp"><TextInput value={c.compTarget || ''} onChange={(e) => onPatch(c.id, { compTarget: e.target.value })} /></Field>
+              <Field label="Next step" span={2}><TextInput value={c.nextStep || ''} onChange={(e) => onPatch(c.id, { nextStep: e.target.value })} placeholder="Send calibration notes to client" /></Field>
+              <Field label="Next step date" span={2}>
+                <TextInput type="date" value={c.nextStepDate ? c.nextStepDate.slice(0, 10) : ''} onChange={(e) => onPatch(c.id, { nextStepDate: e.target.value })} />
+              </Field>
+              <div style={{ gridColumn: 'span 2', marginTop: 8, paddingTop: 12, borderTop: `1px solid ${C.line}` }}>
+                {confirmDel ? (
+                  <div className="flex items-center gap-2">
+                    <span style={{ fontSize: 12, color: C.red }}>Delete this candidate and their notes?</span>
+                    <Btn size="sm" kind="danger" onClick={() => onDelete(c.id)}>Delete</Btn>
+                    <Btn size="sm" kind="ghost" onClick={() => setConfirmDel(false)}>Keep</Btn>
+                  </div>
+                ) : (
+                  <Btn size="sm" kind="danger" onClick={() => setConfirmDel(true)}><Trash2 size={12} /> Delete candidate</Btn>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/* ============================================================
+   FORMS
+   ============================================================ */
+function CandidateForm({ tags, searches, owners, onClose, onSave }) {
+  const [f, setF] = useState({
+    id: uid('c'), name: '', title: '', company: '', email: '', phone: '', linkedin: '', location: '',
+    functionTags: [], searchId: '', stage: 'identified', owner: owners[0] || '', source: '',
+    compCurrent: '', compTarget: '', resumeLink: '', nextStep: '', nextStepDate: '',
+    lastContactAt: nowISO(), notes: [],
+  });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const toggle = (t) => set('functionTags', f.functionTags.includes(t) ? f.functionTags.filter((x) => x !== t) : [...f.functionTags, t]);
+
+  return (
+    <Modal title="Add candidate" onClose={onClose} wide>
+      <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(190px, 1fr))' }}>
+        <Field label="Full name"><TextInput value={f.name} onChange={(e) => set('name', e.target.value)} placeholder="Required" /></Field>
+        <Field label="Title"><TextInput value={f.title} onChange={(e) => set('title', e.target.value)} /></Field>
+        <Field label="Company"><TextInput value={f.company} onChange={(e) => set('company', e.target.value)} /></Field>
+        <Field label="Location"><TextInput value={f.location} onChange={(e) => set('location', e.target.value)} /></Field>
+        <Field label="Email"><TextInput value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
+        <Field label="Phone"><TextInput value={f.phone} onChange={(e) => set('phone', e.target.value)} /></Field>
+        <Field label="LinkedIn"><TextInput value={f.linkedin} onChange={(e) => set('linkedin', e.target.value)} /></Field>
+        <Field label="Resume link"><TextInput value={f.resumeLink} onChange={(e) => set('resumeLink', e.target.value)} /></Field>
+        <Field label="Search">
+          <Select value={f.searchId} onChange={(e) => set('searchId', e.target.value)}>
+            <option value="">Unassigned</option>
+            {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+          </Select>
+        </Field>
+        <Field label="Stage">
+          <Select value={f.stage} onChange={(e) => set('stage', e.target.value)}>
+            {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+          </Select>
+        </Field>
+        <Field label="Owner">
+          <Select value={f.owner} onChange={(e) => set('owner', e.target.value)}>
+            <option value="">Unassigned</option>
+            {owners.map((o) => <option key={o} value={o}>{o}</option>)}
+          </Select>
+        </Field>
+        <Field label="Source"><TextInput value={f.source} onChange={(e) => set('source', e.target.value)} /></Field>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 700, marginBottom: 7 }}>Function tags</div>
+        <div className="flex flex-wrap gap-1.5">
+          {tags.map((t) => <Pill key={t} color={tagColor(tags, t)} filled={f.functionTags.includes(t)} onClick={() => toggle(t)}>{t}</Pill>)}
+        </div>
+      </div>
+      <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave(f)} disabled={!f.name.trim()}>Save candidate</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function SearchForm({ record, tags, clients, owners, onClose, onSave }) {
+  const [f, setF] = useState(
+    record || { id: uid('s'), client: '', role: '', functionTags: [], status: 'Active', owner: owners[0] || '', fee: '', startDate: new Date().toISOString().slice(0, 10), targetDate: '', notes: '' }
+  );
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  const toggle = (t) => set('functionTags', (f.functionTags || []).includes(t) ? f.functionTags.filter((x) => x !== t) : [...(f.functionTags || []), t]);
+
+  return (
+    <Modal title={record ? 'Edit search' : 'Add search'} onClose={onClose}>
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
+        <Field label="Client" span={2}>
+          <TextInput value={f.client} onChange={(e) => set('client', e.target.value)} list="ccp-clients" placeholder="Required" />
+          <datalist id="ccp-clients">{clients.map((c) => <option key={c.id} value={c.name} />)}</datalist>
+        </Field>
+        <Field label="Role" span={2}><TextInput value={f.role} onChange={(e) => set('role', e.target.value)} placeholder="Chief Revenue Officer" /></Field>
+        <Field label="Status">
+          <Select value={f.status} onChange={(e) => set('status', e.target.value)}>
+            {['Active', 'On Hold', 'Business Development', 'Closed'].map((s) => <option key={s}>{s}</option>)}
+          </Select>
+        </Field>
+        <Field label="Owner">
+          <Select value={f.owner} onChange={(e) => set('owner', e.target.value)}>
+            <option value="">Unassigned</option>
+            {owners.map((o) => <option key={o}>{o}</option>)}
+          </Select>
+        </Field>
+        <Field label="Opened"><TextInput type="date" value={f.startDate || ''} onChange={(e) => set('startDate', e.target.value)} /></Field>
+        <Field label="Target close"><TextInput type="date" value={f.targetDate || ''} onChange={(e) => set('targetDate', e.target.value)} /></Field>
+        <Field label="Fee" span={2}><TextInput value={f.fee} onChange={(e) => set('fee', e.target.value)} placeholder="$120K retained, three installments" /></Field>
+        <Field label="Notes" span={2}><TextArea rows={3} value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+      </div>
+      <div style={{ marginTop: 14 }}>
+        <div style={{ fontSize: 10, letterSpacing: 0.8, textTransform: 'uppercase', color: C.mute, fontWeight: 700, marginBottom: 7 }}>Function tags</div>
+        <div className="flex flex-wrap gap-1.5">
+          {tags.map((t) => <Pill key={t} color={tagColor(tags, t)} filled={(f.functionTags || []).includes(t)} onClick={() => toggle(t)}>{t}</Pill>)}
+        </div>
+      </div>
+      <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave(f)} disabled={!f.client.trim() || !f.role.trim()}>Save search</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function ClientForm({ record, onClose, onSave }) {
+  const [f, setF] = useState(record || { id: uid('cl'), name: '', type: 'Direct', contactName: '', contactTitle: '', email: '', phone: '', status: 'Prospect', notes: '' });
+  const set = (k, v) => setF((p) => ({ ...p, [k]: v }));
+  return (
+    <Modal title={record ? 'Edit client' : 'Add client'} onClose={onClose}>
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr' }}>
+        <Field label="Client name" span={2}><TextInput value={f.name} onChange={(e) => set('name', e.target.value)} /></Field>
+        <Field label="Type">
+          <Select value={f.type} onChange={(e) => set('type', e.target.value)}>
+            {['PE Sponsor', 'Portfolio Company', 'Direct', 'Professional Services'].map((t) => <option key={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Status">
+          <Select value={f.status} onChange={(e) => set('status', e.target.value)}>
+            {['Prospect', 'Active', 'Past'].map((t) => <option key={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Contact name"><TextInput value={f.contactName} onChange={(e) => set('contactName', e.target.value)} /></Field>
+        <Field label="Contact title"><TextInput value={f.contactTitle} onChange={(e) => set('contactTitle', e.target.value)} /></Field>
+        <Field label="Email"><TextInput value={f.email} onChange={(e) => set('email', e.target.value)} /></Field>
+        <Field label="Phone"><TextInput value={f.phone} onChange={(e) => set('phone', e.target.value)} /></Field>
+        <Field label="Notes" span={2}><TextArea rows={3} value={f.notes} onChange={(e) => set('notes', e.target.value)} /></Field>
+      </div>
+      <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave(f)} disabled={!f.name.trim()}>Save client</Btn>
+      </div>
+    </Modal>
+  );
+}
+
+function BulkAdd({ tags, searches, owners, onClose, onSave }) {
+  const [text, setText] = useState('');
+  const [tag, setTag] = useState('');
+  const [searchId, setSearchId] = useState('');
+  const [owner, setOwner] = useState(owners[0] || '');
+
+  const parsed = useMemo(() =>
+    text.split('\n').map((l) => l.trim()).filter(Boolean).map((l) => {
+      const [name, title, company] = l.split(',').map((x) => (x || '').trim());
+      return { name, title, company };
+    }).filter((r) => r.name), [text]);
+
+  const commit = () =>
+    onSave(parsed.map((r) => ({
+      id: uid('c'), name: r.name, title: r.title || '', company: r.company || '',
+      email: '', phone: '', linkedin: '', location: '', functionTags: tag ? [tag] : [],
+      searchId, stage: 'identified', owner, source: 'Bulk add', compCurrent: '', compTarget: '',
+      resumeLink: '', nextStep: '', nextStepDate: '', lastContactAt: nowISO(),
+      createdAt: nowISO(), updatedAt: nowISO(), notes: [],
+    })));
+
+  return (
+    <Modal title="Paste a candidate list" onClose={onClose}>
+      <div style={{ fontSize: 12, color: C.mute, lineHeight: 1.6, marginBottom: 10 }}>
+        One person per line, comma separated: <strong style={{ color: C.ink }}>Name, Title, Company</strong>. Title and company are optional.
+      </div>
+      <TextArea rows={9} value={text} onChange={(e) => setText(e.target.value)}
+        placeholder={'Dana Ruiz, VP Sales, Northwind\nSam Okafor, Head of AI, Lattice Labs'} />
+      <div className="grid gap-3" style={{ gridTemplateColumns: '1fr 1fr', marginTop: 12 }}>
+        <Field label="Apply function tag">
+          <Select value={tag} onChange={(e) => setTag(e.target.value)}>
+            <option value="">None</option>
+            {tags.map((t) => <option key={t}>{t}</option>)}
+          </Select>
+        </Field>
+        <Field label="Assign to search">
+          <Select value={searchId} onChange={(e) => setSearchId(e.target.value)}>
+            <option value="">Unassigned</option>
+            {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+          </Select>
+        </Field>
+        <Field label="Owner" span={2}>
+          <Select value={owner} onChange={(e) => setOwner(e.target.value)}>
+            <option value="">Unassigned</option>
+            {owners.map((o) => <option key={o}>{o}</option>)}
+          </Select>
+        </Field>
+      </div>
+      <div className="flex items-center justify-between" style={{ marginTop: 16 }}>
+        <span style={{ fontSize: 12, color: C.mute }}>{parsed.length} candidates ready</span>
+        <div className="flex gap-2">
+          <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+          <Btn onClick={commit} disabled={!parsed.length}>Add {parsed.length || ''}</Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+/* ============================================================
+   CV DROPZONE + IMPORT
+   ============================================================ */
+function Dropzone({ onFiles, multiple = true, compact, label, hint }) {
+  const [over, setOver] = useState(false);
+  const inputRef = useRef(null);
+  const take = (list) => {
+    const arr = Array.from(list || []);
+    if (arr.length) onFiles(multiple ? arr : [arr[0]]);
+  };
+  return (
+    <div
+      onDragOver={(e) => { e.preventDefault(); setOver(true); }}
+      onDragLeave={() => setOver(false)}
+      onDrop={(e) => { e.preventDefault(); setOver(false); take(e.dataTransfer.files); }}
+      onClick={() => inputRef.current && inputRef.current.click()}
+      style={{
+        border: `1.5px dashed ${over ? C.brass : C.line}`,
+        background: over ? C.brassSoft : C.card,
+        padding: compact ? '16px 14px' : '32px 20px',
+        textAlign: 'center',
+        cursor: 'pointer',
+      }}
+    >
+      <input
+        ref={inputRef} type="file" multiple={multiple}
+        accept=".pdf,.docx,.txt,.md,.png,.jpg,.jpeg"
+        style={{ display: 'none' }}
+        onChange={(e) => { take(e.target.files); e.target.value = ''; }}
+      />
+      <UploadCloud size={compact ? 18 : 26} style={{ color: over ? C.brass : C.green, margin: '0 auto 8px' }} />
+      <div style={{ fontFamily: SERIF, fontSize: compact ? 13.5 : 16, color: C.green }}>
+        {label || 'Drop CVs here'}
+      </div>
+      <div style={{ fontSize: 11.5, color: C.mute, marginTop: 4, lineHeight: 1.55 }}>
+        {hint || 'PDF, DOCX, TXT, or a photo. Click to browse.'}
+      </div>
+    </div>
+  );
+}
+
+function CVImport({ tags, searches, owners, onClose, onCommit }) {
+  const [jobs, setJobs] = useState([]);
+  const [searchId, setSearchId] = useState('');
+  const [owner, setOwner] = useState(owners[0] || '');
+  const [stage, setStage] = useState('identified');
+  const [committing, setCommitting] = useState(false);
+  const running = useRef(false);
+
+  const addFiles = (files) => {
+    setJobs((prev) => [
+      ...prev,
+      ...files.map((f) => ({ id: uid('j'), file: f, status: 'queued', error: null, parsed: null, include: true })),
+    ]);
+  };
+
+  // parse queued files one at a time
+  useEffect(() => {
+    if (running.current) return;
+    const next = jobs.find((j) => j.status === 'queued');
+    if (!next) return;
+    running.current = true;
+    const set = (patch) => setJobs((prev) => prev.map((j) => (j.id === next.id ? { ...j, ...patch } : j)));
+    set({ status: 'reading' });
+    (async () => {
+      try {
+        const parsed = await parseCV(next.file, tags);
+        set({ status: 'done', parsed });
+      } catch (e) {
+        set({ status: 'error', error: e.message || 'Could not read that file.' });
+      }
+      running.current = false;
+      setJobs((prev) => [...prev]); // nudge the queue
+    })();
+  }, [jobs, tags]);
+
+  const ready = jobs.filter((j) => j.status === 'done' && j.include);
+  const busy = jobs.some((j) => j.status === 'queued' || j.status === 'reading');
+
+  const editParsed = (id, key, val) =>
+    setJobs((prev) => prev.map((j) => (j.id === id ? { ...j, parsed: { ...j.parsed, [key]: val } } : j)));
+
+  const toggleTag = (id, t) =>
+    setJobs((prev) =>
+      prev.map((j) => {
+        if (j.id !== id) return j;
+        const cur = j.parsed.functionTags || [];
+        return { ...j, parsed: { ...j.parsed, functionTags: cur.includes(t) ? cur.filter((x) => x !== t) : [...cur, t] } };
+      })
+    );
+
+  const commit = async () => {
+    setCommitting(true);
+    const items = [];
+    for (const j of ready) {
+      const p = j.parsed;
+      const id = uid('c');
+      const cvFile = await packCVFile(j.file).catch(() => null);
+      const notes = [];
+      if (p.summary) notes.push({ id: uid('n'), ts: nowISO(), kind: 'note', body: p.summary });
+      if (p.highlights?.length) notes.push({ id: uid('n'), ts: nowISO(), kind: 'note', body: p.highlights.map((h) => `- ${h}`).join('\n') });
+      notes.push({ id: uid('n'), ts: nowISO(), kind: 'system', body: `Added from CV: ${j.file.name}` });
+      items.push({
+        candidate: {
+          id, name: p.name || j.file.name.replace(/\.[^.]+$/, ''), title: p.title || '', company: p.company || '',
+          email: p.email || '', phone: p.phone || '', linkedin: p.linkedin || '', location: p.location || '',
+          functionTags: p.functionTags || [], searchId, stage, owner,
+          source: 'CV import', seniority: p.seniority || '', yearsExperience: p.yearsExperience || '',
+          compCurrent: p.compCurrent || '', compTarget: '', resumeLink: '',
+          cvFileName: cvFile ? j.file.name : '', hasCvFile: !!cvFile, hasResumeText: true,
+          nextStep: '', nextStepDate: '', lastContactAt: nowISO(),
+          createdAt: nowISO(), updatedAt: nowISO(), notes,
+        },
+        resumeText: buildResumeText(p),
+        cvFile,
+      });
+    }
+    await onCommit(items);
+    setCommitting(false);
+  };
+
+  const StatusChip = ({ j }) => {
+    if (j.status === 'queued') return <span style={{ fontSize: 11, color: C.mute }}>Queued</span>;
+    if (j.status === 'reading') return <span className="flex items-center gap-1" style={{ fontSize: 11, color: C.brass }}><Loader2 size={11} className="animate-spin" /> Reading</span>;
+    if (j.status === 'error') return <span style={{ fontSize: 11, color: C.red }}>{j.error}</span>;
+    return <span className="flex items-center gap-1" style={{ fontSize: 11, color: C.green }}><Check size={11} /> Parsed</span>;
+  };
+
+  return (
+    <Modal title="Import CVs" onClose={onClose} wide>
+      <Dropzone onFiles={addFiles} />
+
+      {jobs.length > 0 && (
+        <div style={{ marginTop: 16 }}>
+          <div className="grid gap-3" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))', marginBottom: 14 }}>
+            <Field label="Assign to search">
+              <Select value={searchId} onChange={(e) => setSearchId(e.target.value)}>
+                <option value="">Unassigned</option>
+                {searches.map((s) => <option key={s.id} value={s.id}>{s.client} - {s.role}</option>)}
+              </Select>
+            </Field>
+            <Field label="Owner">
+              <Select value={owner} onChange={(e) => setOwner(e.target.value)}>
+                <option value="">Unassigned</option>
+                {owners.map((o) => <option key={o}>{o}</option>)}
+              </Select>
+            </Field>
+            <Field label="Starting stage">
+              <Select value={stage} onChange={(e) => setStage(e.target.value)}>
+                {STAGES.map((s) => <option key={s.id} value={s.id}>{s.label}</option>)}
+              </Select>
+            </Field>
+          </div>
+
+          <div className="flex flex-col gap-2" style={{ maxHeight: 380, overflowY: 'auto' }}>
+            {jobs.map((j) => (
+              <div key={j.id} style={{ border: `1px solid ${C.line}`, background: C.card, padding: 12, opacity: j.include ? 1 : 0.5 }}>
+                <div className="flex items-center justify-between gap-2">
+                  <div className="flex items-center gap-2" style={{ minWidth: 0 }}>
+                    <Paperclip size={12} style={{ color: C.mute, flexShrink: 0 }} />
+                    <span style={{ fontSize: 11.5, color: C.mute, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{j.file.name}</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <StatusChip j={j} />
+                    <button onClick={() => setJobs((p) => p.filter((x) => x.id !== j.id))} style={{ cursor: 'pointer', color: C.mute }}><X size={13} /></button>
+                  </div>
+                </div>
+
+                {j.status === 'done' && j.parsed && (
+                  <div style={{ marginTop: 10 }}>
+                    <div className="grid gap-2" style={{ gridTemplateColumns: 'repeat(auto-fit, minmax(150px, 1fr))' }}>
+                      <Field label="Name"><TextInput value={j.parsed.name || ''} onChange={(e) => editParsed(j.id, 'name', e.target.value)} /></Field>
+                      <Field label="Title"><TextInput value={j.parsed.title || ''} onChange={(e) => editParsed(j.id, 'title', e.target.value)} /></Field>
+                      <Field label="Company"><TextInput value={j.parsed.company || ''} onChange={(e) => editParsed(j.id, 'company', e.target.value)} /></Field>
+                      <Field label="Email"><TextInput value={j.parsed.email || ''} onChange={(e) => editParsed(j.id, 'email', e.target.value)} /></Field>
+                      <Field label="Phone"><TextInput value={j.parsed.phone || ''} onChange={(e) => editParsed(j.id, 'phone', e.target.value)} /></Field>
+                      <Field label="Location"><TextInput value={j.parsed.location || ''} onChange={(e) => editParsed(j.id, 'location', e.target.value)} /></Field>
+                    </div>
+                    <div className="flex flex-wrap gap-1.5" style={{ marginTop: 10 }}>
+                      {tags.map((t) => (
+                        <Pill key={t} color={tagColor(tags, t)} filled={(j.parsed.functionTags || []).includes(t)} onClick={() => toggleTag(j.id, t)}>{t}</Pill>
+                      ))}
+                    </div>
+                    {j.parsed.summary && (
+                      <div style={{ fontSize: 12, color: C.mute, lineHeight: 1.6, marginTop: 10, paddingTop: 9, borderTop: `1px solid ${C.lineSoft}` }}>
+                        {j.parsed.summary}
+                      </div>
+                    )}
+                    <div className="flex items-center gap-3" style={{ marginTop: 9 }}>
+                      <label className="flex items-center gap-1.5" style={{ fontSize: 11.5, color: C.mute, cursor: 'pointer' }}>
+                        <input type="checkbox" checked={j.include} onChange={(e) => setJobs((p) => p.map((x) => (x.id === j.id ? { ...x, include: e.target.checked } : x)))} />
+                        Add this candidate
+                      </label>
+                      {j.parsed.seniority && <Pill color={C.navy}>{j.parsed.seniority}</Pill>}
+                      {j.parsed.yearsExperience && <span style={{ fontSize: 11, color: C.mute }}>{j.parsed.yearsExperience} yrs</span>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      <div className="flex items-center justify-between" style={{ marginTop: 18 }}>
+        <span style={{ fontSize: 11.5, color: C.mute }}>
+          {busy ? 'Reading CVs' : `${ready.length} ready to add`}
+        </span>
+        <div className="flex gap-2">
+          <Btn kind="ghost" onClick={onClose}>Close</Btn>
+          <Btn onClick={commit} disabled={!ready.length || busy || committing}>
+            {committing ? <Loader2 size={12} className="animate-spin" /> : <Plus size={12} />} Add {ready.length || ''} candidates
+          </Btn>
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+function SettingsForm({ meta, onClose, onSave }) {
+  const [tags, setTags] = useState(meta.tags.join('\n'));
+  const [owners, setOwners] = useState(meta.owners.join('\n'));
+  return (
+    <Modal title="Tags and team" onClose={onClose}>
+      <div className="flex flex-col gap-4">
+        <Field label="Function tags (one per line)">
+          <TextArea rows={9} value={tags} onChange={(e) => setTags(e.target.value)} />
+        </Field>
+        <Field label="Team members (one per line)">
+          <TextArea rows={4} value={owners} onChange={(e) => setOwners(e.target.value)} />
+        </Field>
+        <div style={{ fontSize: 11.5, color: C.mute, lineHeight: 1.6 }}>
+          Removing a tag here leaves it on any candidate already carrying it. Re-add the tag if you want it selectable again.
+        </div>
+      </div>
+      <div className="flex justify-end gap-2" style={{ marginTop: 18 }}>
+        <Btn kind="ghost" onClick={onClose}>Cancel</Btn>
+        <Btn onClick={() => onSave({
+          tags: tags.split('\n').map((t) => t.trim()).filter(Boolean),
+          owners: owners.split('\n').map((t) => t.trim()).filter(Boolean),
+        })}>Save</Btn>
+      </div>
+    </Modal>
+  );
+}
