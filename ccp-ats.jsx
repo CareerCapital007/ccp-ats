@@ -55,6 +55,13 @@ const STAGES = [
 const stageOf = (id) => STAGES.find((s) => s.id === id) || STAGES[0];
 const searchIdsOf = (c) => (c.searchIds && c.searchIds.length ? c.searchIds : c.searchId ? [c.searchId] : []);
 const stageFor = (c, sid) => (sid && c.stages && c.stages[sid]) || c.stage || 'identified';
+const ROUNDS = ['Screen', 'First round', 'Panel', 'Final', 'Reference'];
+const interviewFor = (c, sid) => (sid && c.interviews && c.interviews[sid]) || null;
+const nextInterview = (c) => {
+  const all = Object.values(c.interviews || {}).filter((i) => i && i.date);
+  if (!all.length) return null;
+  return all.sort((a, b) => a.date.localeCompare(b.date))[0];
+};
 const furthestStage = (c) => {
   const ids = searchIdsOf(c);
   if (!ids.length || !c.stages) return c.stage || 'identified';
@@ -512,6 +519,18 @@ export default function App() {
     patchCandidate(id, patch, label);
   };
 
+  const setInterview = (id, sid, patch) => {
+    const c = data.candidates.find((x) => x.id === id);
+    if (!c || !sid) return;
+    const cur = (c.interviews || {})[sid] || { date: '', round: 'First round' };
+    const merged = { ...cur, ...patch };
+    const sr = searchById[sid];
+    const label = merged.date
+      ? `${sr?.role || 'Search'}: ${merged.round || 'Interview'} set for ${fmtDate(merged.date)}`
+      : `${sr?.role || 'Search'}: interview date cleared`;
+    patchCandidate(id, { interviews: { ...(c.interviews || {}), [sid]: merged } }, label);
+  };
+
   // adds a search to a candidate rather than replacing what they already run in
   const addToSearch = (ids, sid) => {
     const set = new Set(ids);
@@ -650,7 +669,7 @@ export default function App() {
   }, [data.candidates, q, fTag, fSearch, fOwner]);
 
   const exportCSV = () => {
-    const cols = ['Name', 'Title', 'Company', 'Function Tags', 'Search', 'Stage', 'Owner', 'Email', 'Phone', 'LinkedIn', 'Location', 'Current Comp', 'Target Comp', 'Source', 'Resume Link', 'Next Step', 'Next Step Date', 'Last Contact', 'Notes Count'];
+    const cols = ['Name', 'Title', 'Company', 'Function Tags', 'Search', 'Stage', 'Owner', 'Email', 'Phone', 'LinkedIn', 'Location', 'Current Comp', 'Target Comp', 'Source', 'Resume Link', 'Next Step', 'Next Step Date', 'Interviews', 'Last Contact', 'Notes Count'];
     const esc = (v) => `"${String(v ?? '').replace(/"/g, '""')}"`;
     const rows = filtered.map((c) =>
       [
@@ -658,7 +677,10 @@ export default function App() {
         searchIdsOf(c).map((sid) => searchById[sid] ? `${searchById[sid].client} - ${searchById[sid].role}` : '').filter(Boolean).join('; '),
         searchIdsOf(c).map((sid) => `${searchById[sid]?.role || 'Search'}: ${stageOf(stageFor(c, sid)).label}`).join('; ') || stageOf(c.stage).label, c.owner, c.email, c.phone, c.linkedin, c.location,
         c.compCurrent, c.compTarget, c.source, c.resumeLink, c.nextStep,
-        c.nextStepDate ? fmtDate(c.nextStepDate) : '', fmtDate(c.lastContactAt || c.updatedAt), (c.notes || []).length,
+        c.nextStepDate ? fmtDate(c.nextStepDate) : '',
+        Object.entries(c.interviews || {}).filter(([, v]) => v && v.date)
+          .map(([sid, v]) => `${searchById[sid]?.role || 'Search'}: ${v.round || 'Interview'} ${fmtDate(v.date)}`).join('; '),
+        fmtDate(c.lastContactAt || c.updatedAt), (c.notes || []).length,
       ].map(esc).join(',')
     );
     const blob = new Blob([[cols.map(esc).join(','), ...rows].join('\n')], { type: 'text/csv;charset=utf-8;' });
@@ -801,7 +823,7 @@ export default function App() {
             onCV={() => setModal({ type: 'cv' })}
             searches={data.searches} owners={data.meta.owners} onBulkPatch={bulkPatch}
             onDelete={removeCandidate} mode={mode} setMode={setMode}
-            activeSearch={fSearch} onAddToSearch={addToSearch} />
+            activeSearch={fSearch} onAddToSearch={addToSearch} onInterview={setInterview} />
         )}
         {view === 'searches' && (
           <SearchesView searches={data.searches} candidates={data.candidates} tags={tags} nav={nav}
@@ -895,6 +917,7 @@ export default function App() {
           onStage={setStage}
           onAddToSearch={addToSearch}
           onRemoveFromSearch={removeFromSearch}
+          onInterview={setInterview}
           onDelete={(id) => { removeCandidate(id); setOpen(null); }}
         />
       )}
@@ -1000,6 +1023,14 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBul
                       <Pill key={t} color={tagColor(tags, t)}>{t}</Pill>
                     ))}
                   </div>
+                  {(() => {
+                    const iv = interviewFor(c, activeSearch) || nextInterview(c);
+                    return iv && iv.date ? (
+                      <div className="flex items-center gap-1" style={{ marginTop: 7, fontSize: 10.5, color: C.brass, fontWeight: 600 }}>
+                        <CalendarClock size={11} /> {iv.round || 'Interview'} · {fmtDate(iv.date)}
+                      </div>
+                    ) : null;
+                  })()}
                   <div className="flex items-center justify-between" style={{ marginTop: 8 }}>
                     <span style={{ fontSize: 10, color: C.mute }}>{daysSince(c.lastContactAt || c.updatedAt) ?? 0}d since contact</span>
                     <select
@@ -1025,7 +1056,7 @@ function PipelineView({ rows, tags, onOpen, onStage, onAdd, mode, setMode, onBul
 /* ============================================================
    VIEW: CANDIDATE TABLE
    ============================================================ */
-function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete, mode, setMode, activeSearch, onAddToSearch }) {
+function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onAdd, onBulk, onCV, searches, owners, onBulkPatch, onDelete, mode, setMode, activeSearch, onAddToSearch, onInterview }) {
   const [sort, setSort] = useState({ key: 'updatedAt', dir: -1 });
   const [sel, setSel] = useState([]);
   const [confirmId, setConfirmId] = useState(null);
@@ -1044,6 +1075,10 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
   const sorted = useMemo(() => {
     const v = (c) => {
       if (sort.key === 'age') return daysSince(c.lastContactAt || c.updatedAt) ?? 0;
+      if (sort.key === 'interview') {
+        const iv = activeSearch ? interviewFor(c, activeSearch) : nextInterview(c);
+        return iv && iv.date ? iv.date : '9999';
+      }
       if (sort.key === 'stage') return STAGES.findIndex((s) => s.id === (activeSearch ? stageFor(c, activeSearch) : furthestStage(c)));
       return (c[sort.key] || '').toString().toLowerCase();
     };
@@ -1121,6 +1156,7 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
               <H k="searchId">Search</H>
               <H k="stage" w={150}>Stage</H>
               <H k="owner">Owner</H>
+              <H k="interview" w={130}>Interview</H>
               <H k="age" w={70}>Aging</H>
               <th style={{ width: 130 }} />
             </tr>
@@ -1168,6 +1204,19 @@ function CandidatesTable({ rows, tags, searchById, onOpen, onStage, onTouch, onA
                     )}
                   </td>
                   <td style={{ padding: '9px 10px', fontSize: 11.5 }}>{c.owner || '-'}</td>
+                  <td style={{ padding: '9px 10px' }}>
+                    {activeSearch ? (
+                      <input type="date"
+                        value={(interviewFor(c, activeSearch) || {}).date || ''}
+                        onChange={(e) => onInterview(c.id, activeSearch, { date: e.target.value })}
+                        style={{ fontSize: 11, padding: '3px 4px', border: `1px solid ${C.line}`, background: '#fff', color: C.ink, width: '100%' }} />
+                    ) : (() => {
+                      const iv = nextInterview(c);
+                      return iv && iv.date
+                        ? <span style={{ fontSize: 11.5, color: C.brass, fontWeight: 600 }}>{fmtDate(iv.date)}</span>
+                        : <span style={{ fontSize: 11.5, color: C.mute }}>-</span>;
+                    })()}
+                  </td>
                   <td style={{ padding: '9px 10px', fontFamily: SERIF, fontSize: 14, color: age >= 21 ? C.red : age >= 7 ? C.brass : C.mute }}>{age}d</td>
                   <td style={{ padding: '9px 10px' }}>
                     {confirmId === c.id ? (
@@ -1234,6 +1283,28 @@ function SearchesView({ searches, candidates, tags, nav, onAdd, onEdit, onJump, 
                 <Meta k="Fee" v={s.fee} />
               </div>
               {s.notes && <div style={{ fontSize: 11.5, color: C.mute, marginTop: 10, lineHeight: 1.55 }}>{s.notes}</div>}
+              {(() => {
+                const booked = candidates
+                  .filter((c) => searchIdsOf(c).includes(s.id))
+                  .map((c) => ({ c, iv: interviewFor(c, s.id) }))
+                  .filter((x) => x.iv && x.iv.date)
+                  .sort((a, b) => a.iv.date.localeCompare(b.iv.date));
+                if (!booked.length) return null;
+                return (
+                  <div style={{ marginTop: 12 }}>
+                    <Eyebrow color={C.mute} style={{ marginBottom: 7 }}>Interviews booked</Eyebrow>
+                    <div className="flex flex-col" style={{ gap: 3 }}>
+                      {booked.slice(0, 5).map(({ c, iv }) => (
+                        <div key={c.id} className="flex items-center justify-between gap-2"
+                          style={{ fontSize: 11.5, borderBottom: `1px solid ${C.lineSoft}`, padding: '4px 0' }}>
+                          <span style={{ fontWeight: 600 }}>{c.name}</span>
+                          <span style={{ color: C.brass, fontWeight: 600, flexShrink: 0 }}>{iv.round || 'Interview'} · {fmtDate(iv.date)}</span>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
               {s.clientId && (() => {
                 const all = nav.rel.contactsOfClient(s.clientId);
                 const picked = (s.contactIds || []).length
@@ -1354,7 +1425,7 @@ function ClientsView({ clients, nav, onAdd, onEdit }) {
 /* ============================================================
    CANDIDATE DRAWER
    ============================================================ */
-function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPatch, onStage, onDelete, onAddToSearch, onRemoveFromSearch }) {
+function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPatch, onStage, onDelete, onAddToSearch, onRemoveFromSearch, onInterview }) {
   const [note, setNote] = useState('');
   const [resume, setResume] = useState('');
   const [resumeLoaded, setResumeLoaded] = useState(false);
@@ -1497,18 +1568,34 @@ function CandidateDrawer({ candidate, tags, searches, owners, nav, onClose, onPa
                     if (!sr) return null;
                     const st = stageOf(stageFor(c, sid));
                     return (
-                      <div key={sid} className="flex items-center gap-2"
-                        style={{ border: `1px solid ${C.lineSoft}`, background: C.card, padding: '8px 9px' }}>
-                        <button onClick={() => nav.goTo('search', sid)} className="flex-1" style={{ textAlign: 'left', cursor: 'pointer', minWidth: 0 }}>
-                          <div style={{ fontSize: 12, fontWeight: 700 }}>{sr.role}</div>
-                          <div style={{ fontSize: 10.5, color: C.mute }}>{sr.client}</div>
-                        </button>
-                        <select value={stageFor(c, sid)} onChange={(e) => onStage(c.id, e.target.value, sid)}
-                          style={{ fontSize: 10.5, padding: '3px 4px', border: `1px solid ${C.line}`, background: '#fff', color: st.color, fontWeight: 700 }}>
-                          {STAGES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
-                        </select>
-                        <button title="Remove from this search" onClick={() => onRemoveFromSearch(c.id, sid)}
-                          style={{ cursor: 'pointer', color: C.mute, padding: 2 }}><X size={12} /></button>
+                      <div key={sid} style={{ border: `1px solid ${C.lineSoft}`, background: C.card, padding: '9px 10px' }}>
+                        <div className="flex items-center gap-2">
+                          <button onClick={() => nav.goTo('search', sid)} className="flex-1" style={{ textAlign: 'left', cursor: 'pointer', minWidth: 0 }}>
+                            <div style={{ fontSize: 12, fontWeight: 700 }}>{sr.role}</div>
+                            <div style={{ fontSize: 10.5, color: C.mute }}>{sr.client}</div>
+                          </button>
+                          <select value={stageFor(c, sid)} onChange={(e) => onStage(c.id, e.target.value, sid)}
+                            style={{ fontSize: 10.5, padding: '3px 4px', border: `1px solid ${C.line}`, background: '#fff', color: st.color, fontWeight: 700 }}>
+                            {STAGES.map((x) => <option key={x.id} value={x.id}>{x.label}</option>)}
+                          </select>
+                          <button title="Remove from this search" onClick={() => onRemoveFromSearch(c.id, sid)}
+                            style={{ cursor: 'pointer', color: C.mute, padding: 2 }}><X size={12} /></button>
+                        </div>
+                        <div className="flex items-center gap-2" style={{ marginTop: 7, paddingTop: 7, borderTop: `1px solid ${C.lineSoft}` }}>
+                          <span style={{ fontSize: 9.5, letterSpacing: 1.4, textTransform: 'uppercase', color: C.mute, fontWeight: 600, flexShrink: 0 }}>
+                            Interview
+                          </span>
+                          <input type="date"
+                            value={(interviewFor(c, sid) || {}).date || ''}
+                            onChange={(e) => onInterview(c.id, sid, { date: e.target.value })}
+                            style={{ fontSize: 11, padding: '3px 5px', border: `1px solid ${C.line}`, background: '#fff', color: C.ink, flex: 1, minWidth: 0 }} />
+                          <select
+                            value={(interviewFor(c, sid) || {}).round || 'First round'}
+                            onChange={(e) => onInterview(c.id, sid, { round: e.target.value })}
+                            style={{ fontSize: 10.5, padding: '3px 4px', border: `1px solid ${C.line}`, background: '#fff', color: C.mute }}>
+                            {ROUNDS.map((r) => <option key={r}>{r}</option>)}
+                          </select>
+                        </div>
                       </div>
                     );
                   })}
